@@ -230,6 +230,7 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         // macOS: clicking the dock icon when all windows are hidden should reopen the window
+        #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen {
             has_visible_windows,
             ..
@@ -240,6 +241,8 @@ pub fn run() {
                 log::debug!("[app] reopened window from dock click");
             }
         }
+
+        let _ = (app_handle, event); // suppress unused warnings on non-macOS
     });
 }
 

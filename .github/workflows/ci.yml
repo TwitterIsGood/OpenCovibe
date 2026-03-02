@@ -84,6 +84,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Format check
+        shell: bash
         run: |
           if ! cargo fmt --manifest-path src-tauri/Cargo.toml --check; then
             echo ""

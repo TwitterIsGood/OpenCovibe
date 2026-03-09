@@ -213,8 +213,8 @@ export async function checkIsDirectory(path: string): Promise<boolean> {
   return invoke<boolean>("check_is_directory", { path });
 }
 
-export async function readFileBase64(path: string): Promise<[string, string]> {
-  return invoke<[string, string]>("read_file_base64", { path });
+export async function readFileBase64(path: string, cwd?: string): Promise<[string, string]> {
+  return invoke<[string, string]>("read_file_base64", { path, cwd: cwd ?? null });
 }
 
 // Git

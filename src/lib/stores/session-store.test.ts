@@ -2072,6 +2072,448 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  describe("resolvePermissionAllow", () => {
+    it("switches permission_prompt to running, preserves permission_request_id", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: { command: "npm test" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-1",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: { command: "npm test" },
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events);
+      const before = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(before.tool.status).toBe("permission_prompt");
+
+      store.resolvePermissionAllow("req-1");
+
+      const after = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(after.tool.status).toBe("running");
+      expect(after.tool.permission_request_id).toBe("req-1");
+    });
+
+    it("skips AskUserQuestion tools", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "ask-1",
+          tool_name: "AskUserQuestion",
+          input: { question: "pick one" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-ask",
+          tool_name: "AskUserQuestion",
+          tool_use_id: "ask-1",
+          tool_input: { question: "pick one" },
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events);
+
+      store.resolvePermissionAllow("req-ask");
+
+      const entry = store.timeline.find((e) => e.kind === "tool" && e.id === "ask-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(entry.tool.status).toBe("permission_prompt"); // unchanged
+    });
+
+    it("updates subTimeline tool", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "task-parent",
+          tool_name: "Task",
+          input: { prompt: "do stuff" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          input: { command: "ls" },
+          parent_tool_use_id: "task-parent",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          request_id: "req-sub",
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+
+      store.resolvePermissionAllow("req-sub");
+
+      const parent = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "bash-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("running");
+      expect(child.tool.permission_request_id).toBe("req-sub");
+    });
+
+    it("skips AskUserQuestion in subTimeline", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "task-parent",
+          tool_name: "Task",
+          input: { prompt: "do stuff" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "ask-child",
+          tool_name: "AskUserQuestion",
+          input: { question: "which?" },
+          parent_tool_use_id: "task-parent",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          tool_use_id: "ask-child",
+          tool_name: "AskUserQuestion",
+          tool_input: { question: "which?" },
+          request_id: "req-ask-sub",
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+
+      store.resolvePermissionAllow("req-ask-sub");
+
+      const parent = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "ask-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("permission_prompt"); // unchanged
+    });
+
+    it("no-ops for unmatched requestId", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: {},
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-1",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: {},
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events);
+      const before = [...store.timeline];
+
+      store.resolvePermissionAllow("req-nonexistent");
+
+      expect(store.timeline).toEqual(before);
+    });
+  });
+
+  describe("_resolveStaleTools (via idle/spawning/control_cancelled)", () => {
+    it("idle resolves optimistic running (with permission_request_id) to error", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: {},
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-1",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: {},
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events);
+      // Simulate optimistic allow
+      store.resolvePermissionAllow("req-1");
+      const mid = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(mid.tool.status).toBe("running");
+      expect(mid.tool.permission_request_id).toBe("req-1");
+
+      // Now idle arrives
+      store.applyEvent({
+        type: "run_state",
+        run_id: "run-1",
+        state: "idle",
+      } as BusEvent);
+
+      const after = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(after.tool.status).toBe("error");
+    });
+
+    it("idle does NOT resolve normal running tool (no permission_request_id)", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: {},
+        },
+      ];
+      store.applyEventBatch(events);
+      const before = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(before.tool.status).toBe("running");
+      expect(before.tool.permission_request_id).toBeUndefined();
+
+      store.applyEvent({
+        type: "run_state",
+        run_id: "run-1",
+        state: "idle",
+      } as BusEvent);
+
+      const after = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(after.tool.status).toBe("running"); // unchanged
+    });
+
+    it("idle resolves stale subTimeline permission_prompt to error", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "task-parent",
+          tool_name: "Task",
+          input: { prompt: "do stuff" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          input: { command: "ls" },
+          parent_tool_use_id: "task-parent",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          request_id: "req-sub",
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+
+      store.applyEvent({
+        type: "run_state",
+        run_id: "run-1",
+        state: "idle",
+      } as BusEvent);
+
+      const parent = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "bash-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("error");
+    });
+
+    it("idle resolves optimistic running in subTimeline to error", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "task-parent",
+          tool_name: "Task",
+          input: { prompt: "do stuff" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          input: { command: "ls" },
+          parent_tool_use_id: "task-parent",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          request_id: "req-sub",
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+      store.resolvePermissionAllow("req-sub");
+
+      store.applyEvent({
+        type: "run_state",
+        run_id: "run-1",
+        state: "idle",
+      } as BusEvent);
+
+      const parent = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "bash-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("error");
+    });
+
+    it("control_cancelled resolves optimistic running with matching request_id", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "tool-1",
+          tool_name: "Bash",
+          input: { command: "npm test" },
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          request_id: "req-1",
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          tool_input: { command: "npm test" },
+          decision_reason: "",
+        },
+      ];
+      store.applyEventBatch(events);
+      store.resolvePermissionAllow("req-1");
+      const mid = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(mid.tool.status).toBe("running");
+
+      store.applyEvent({
+        type: "control_cancelled",
+        run_id: "run-1",
+        request_id: "req-1",
+      } as BusEvent);
+
+      const after = store.timeline.find((e) => e.kind === "tool" && e.id === "tool-1") as Extract<
+        TimelineEntry,
+        { kind: "tool" }
+      >;
+      expect(after.tool.status).toBe("error");
+    });
+
+    it("control_cancelled resolves subTimeline permission_prompt with matching request_id", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      const events: BusEvent[] = [
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "task-parent",
+          tool_name: "Task",
+          input: { prompt: "do stuff" },
+        },
+        {
+          type: "tool_start",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          input: { command: "rm -rf /" },
+          parent_tool_use_id: "task-parent",
+        },
+        {
+          type: "permission_prompt",
+          run_id: "run-1",
+          tool_use_id: "bash-child",
+          tool_name: "Bash",
+          tool_input: { command: "rm -rf /" },
+          request_id: "req-sub",
+          decision_reason: "dangerous",
+        },
+        { type: "control_cancelled", run_id: "run-1", request_id: "req-sub" },
+      ];
+      store.applyEventBatch(events as BusEvent[]);
+
+      const parent = store.timeline.find(
+        (e) => e.kind === "tool" && e.id === "task-parent",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      const child = parent.subTimeline!.find(
+        (e) => e.kind === "tool" && e.id === "bash-child",
+      ) as Extract<TimelineEntry, { kind: "tool" }>;
+      expect(child.tool.status).toBe("error");
+    });
+  });
+
   describe("unknown event type", () => {
     it("triggers dbgWarn", async () => {
       store.run = makeRun("run-1");

@@ -90,7 +90,11 @@ execSync(`git commit -m "chore: release ${tag}"`, { stdio: "inherit" });
 execSync(`git tag ${tag}`, { stdio: "inherit" });
 
 console.log(`\n  ✓ Committed and tagged ${tag}`);
-console.log(`\n  Next steps:`);
-console.log(`    git push && git push origin ${tag}`);
-console.log(`\n  CI will automatically build macOS dmg + Windows exe and upload to the release.`);
+
+// Auto-push commit and tag to trigger Release workflow
+console.log(`\n  Pushing to remote...`);
+execSync(`git push`, { stdio: "inherit" });
+execSync(`git push origin ${tag}`, { stdio: "inherit" });
+
+console.log(`\n  ✓ Pushed ${tag} — Release workflow triggered`);
 console.log(`  Monitor: https://github.com/AnyiWang/OpenCovibe/actions`);

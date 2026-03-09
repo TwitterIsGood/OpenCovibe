@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getGitDiff, readTextFile, writeTextFile } from "$lib/api";
+  import { getGitDiff, readTextFile, readFileBase64, writeTextFile } from "$lib/api";
   import { dbg } from "$lib/utils/debug";
   import { fileName as pathFileName } from "$lib/utils/format";
   import { t } from "$lib/i18n/index.svelte";
@@ -23,9 +23,27 @@
   let editorMode = $state<"edit" | "rendered">("edit");
 
   const PREVIEWABLE_EXTENSIONS = new Set(["md", "markdown"]);
-  let isPreviewable = $derived(
-    PREVIEWABLE_EXTENSIONS.has(selectedFilePath.split(".").pop()?.toLowerCase() ?? ""),
-  );
+  const IMAGE_EXTENSIONS = new Set([
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "svg",
+    "webp",
+    "ico",
+    "bmp",
+    "avif",
+    "tif",
+    "tiff",
+    "jfif",
+  ]);
+
+  let selectedExt = $derived(selectedFilePath.split(".").pop()?.toLowerCase() ?? "");
+  let isPreviewable = $derived(PREVIEWABLE_EXTENSIONS.has(selectedExt));
+  let isImage = $derived(IMAGE_EXTENSIONS.has(selectedExt));
+
+  /** Base64 data URL for image preview */
+  let imageDataUrl = $state("");
 
   let projectCwd = $state(
     typeof window !== "undefined" ? (localStorage.getItem("ocv:project-cwd") ?? "") : "",
@@ -88,13 +106,23 @@
     editorMode = PREVIEWABLE_EXTENSIONS.has(ext) ? "rendered" : "edit";
     fileLoading = true;
     fileDirty = false;
+    imageDataUrl = "";
     try {
-      fileContent = await readTextFile(path, projectCwd);
-      originalContent = fileContent;
-      dbg("explorer", "file loaded", { path, size: fileContent.length });
+      if (IMAGE_EXTENSIONS.has(ext)) {
+        const [base64, mime] = await readFileBase64(path, projectCwd);
+        imageDataUrl = `data:${mime};base64,${base64}`;
+        fileContent = "";
+        originalContent = "";
+        dbg("explorer", "image loaded", { path, mime });
+      } else {
+        fileContent = await readTextFile(path, projectCwd);
+        originalContent = fileContent;
+        dbg("explorer", "file loaded", { path, size: fileContent.length });
+      }
     } catch (e) {
       fileContent = "";
       originalContent = "";
+      imageDataUrl = "";
       fileError = String(e);
     } finally {
       fileLoading = false;
@@ -177,6 +205,7 @@
         selectedFilePath = "";
         fileContent = "";
         originalContent = "";
+        imageDataUrl = "";
         fileDirty = false;
         fileError = "";
         diffViewFile = null;
@@ -304,7 +333,7 @@
         {/if}
         <span class="text-xs text-muted-foreground truncate flex-1 min-w-0">{selectedFilePath}</span
         >
-        {#if isPreviewable}
+        {#if isPreviewable && !isImage}
           <div class="flex rounded-md border bg-background p-0.5 shrink-0">
             <button
               class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors
@@ -352,16 +381,18 @@
             </button>
           </div>
         {/if}
-        <button
-          class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors shrink-0 disabled:opacity-40 {fileDirty
-            ? 'bg-primary text-primary-foreground hover:bg-primary/90'
-            : 'bg-muted text-muted-foreground cursor-default'}"
-          disabled={!fileDirty || fileSaving || editorMode === "rendered"}
-          title={editorMode === "rendered" ? t("explorer_saveDisabledInPreview") : ""}
-          onclick={saveFile}
-        >
-          {fileSaving ? t("explorer_saving") : t("explorer_save")}
-        </button>
+        {#if !isImage}
+          <button
+            class="rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors shrink-0 disabled:opacity-40 {fileDirty
+              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+              : 'bg-muted text-muted-foreground cursor-default'}"
+            disabled={!fileDirty || fileSaving || editorMode === "rendered"}
+            title={editorMode === "rendered" ? t("explorer_saveDisabledInPreview") : ""}
+            onclick={saveFile}
+          >
+            {fileSaving ? t("explorer_saving") : t("explorer_save")}
+          </button>
+        {/if}
       </div>
       <!-- File content -->
       <div class="flex-1 overflow-hidden min-h-0">
@@ -374,6 +405,16 @@
         {:else if fileError}
           <div class="flex flex-1 items-center justify-center p-4">
             <p class="text-sm text-destructive">{fileError}</p>
+          </div>
+        {:else if isImage && imageDataUrl}
+          <div
+            class="flex items-center justify-center h-full overflow-auto p-4 bg-black/5 dark:bg-white/5"
+          >
+            <img
+              src={imageDataUrl}
+              alt={fileName(selectedFilePath)}
+              class="max-w-full max-h-full object-contain rounded"
+            />
           </div>
         {:else if editorMode === "rendered" && isPreviewable}
           <div class="flex-1 overflow-y-auto p-4 h-full">

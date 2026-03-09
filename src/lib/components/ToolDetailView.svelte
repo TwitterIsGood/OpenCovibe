@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from "$lib/i18n/index.svelte";
+  import { dbg } from "$lib/utils/debug";
   import type { BusToolItem } from "$lib/types";
   import {
     extractOutputText,
@@ -426,6 +427,41 @@
   let outputLineCount = $derived(countLines(outputText));
   let needsExpand = $derived(outputLineCount > 20);
 
+  // Fallback overflow detection (for containers without line-count-based expand)
+  let fallbackRef = $state<HTMLDivElement>();
+  let fallbackNeedsExpand = $state(false);
+
+  $effect(() => {
+    const el = fallbackRef;
+    const isExpanded = outputExpanded; // reactive dependency
+    if (!el) return;
+
+    function checkOverflow() {
+      if (!outputExpanded) {
+        fallbackNeedsExpand = el!.scrollHeight > el!.clientHeight;
+      }
+      // expanded=true: preserve last value so "Collapse" button stays visible
+    }
+
+    if (!isExpanded) {
+      queueMicrotask(checkOverflow);
+    }
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(checkOverflow);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+  });
+
+  function toggleOutputExpand() {
+    outputExpanded = !outputExpanded;
+    dbg("ToolDetailView", outputExpanded ? "expand" : "collapse", {
+      tool: tool.tool_name,
+      outputLineCount,
+    });
+  }
+
   let copyFeedback = $state<string | null>(null);
   let copyTimeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -440,13 +476,18 @@
 </script>
 
 <div class="mt-2 space-y-1.5" onclick={(e) => e.stopPropagation()}>
+  {#snippet truncateOverlay(isTruncated: boolean)}
+    {#if isTruncated && !outputExpanded}
+      <div
+        class="pointer-events-none absolute bottom-0 inset-x-0 h-8 bg-gradient-to-t from-muted/80 to-transparent rounded-b"
+      ></div>
+    {/if}
+  {/snippet}
   {#if tool.tool_name === "Bash" || tool.tool_name === "bash"}
     <!-- Bash: terminal-style rendering -->
     {#if tool.input?.command}
       <div
-        class="tool-terminal overflow-y-auto relative group/copy {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="tool-terminal relative group/copy {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
       >
         <div class="text-emerald-400/80">$ {tool.input.command}</div>
         {#if bashResult}
@@ -462,7 +503,7 @@
         {:else if outputText}
           <div class="mt-1 text-neutral-300/80">{outputText}</div>
         {/if}
-        {#if isInputStreaming}
+        {#if isInputStreaming || tool.status === "running"}
           <span class="inline-block w-1.5 h-3 ml-0.5 bg-emerald-400/50 animate-pulse align-middle"
           ></span>
         {/if}
@@ -471,11 +512,12 @@
           onclick={() => handleCopy(`$ ${tool.input?.command}\n${outputText}`)}
           >{copyFeedback ?? t("common_copy")}</button
         >
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -512,16 +554,28 @@
           />
         {/each}
       {:else if readContent}
-        <div class="rounded bg-muted p-2 max-h-60 overflow-y-auto">
+        <div
+          bind:this={fallbackRef}
+          class="rounded bg-muted p-2 relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
+        >
           <pre
             class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{readContent}</pre>
+          {@render truncateOverlay(fallbackNeedsExpand)}
         </div>
+        {#if fallbackNeedsExpand || outputExpanded}
+          <button
+            class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+            onclick={toggleOutputExpand}
+          >
+            {outputExpanded ? t("common_collapse") : t("common_showAll")}
+          </button>
+        {/if}
       {/if}
     {:else if readContent}
       <div
-        class="rounded bg-muted overflow-y-auto tool-code-block {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted tool-code-block relative {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <pre
           class="text-xs font-mono whitespace-pre-wrap p-2 leading-relaxed">{@html renderCodeWithLineNumbers(
@@ -529,11 +583,12 @@
             lang,
             readStartLine,
           )}</pre>
+        {@render truncateOverlay(countLines(readContent) > 20)}
       </div>
       {#if countLines(readContent) > 20}
         <button
           class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -554,9 +609,9 @@
         editResult!.originalFile,
       )}
       <div
-        class="diff-section overflow-x-auto overflow-y-auto {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="diff-section overflow-x-auto relative {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-y-hidden'}"
       >
         {#each adjustedEditHunks as hunk}
           <div
@@ -566,12 +621,13 @@
           </div>
           {@html renderDiffHunk(hunk, lang)}
         {/each}
+        {@render truncateOverlay(adjustedEditHunks.reduce((n, h) => n + h.lines.length, 0) > 20)}
       </div>
       {@const patchLineCount = adjustedEditHunks.reduce((n, h) => n + h.lines.length, 0)}
       {#if patchLineCount > 20}
         <button
           class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -588,9 +644,9 @@
         origFile,
       )}
       <div
-        class="diff-section overflow-x-auto overflow-y-auto {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="diff-section overflow-x-auto relative {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-y-hidden'}"
       >
         {#each fallbackHunks as hunk}
           <div
@@ -600,12 +656,13 @@
           </div>
           {@html renderDiffHunk(hunk, lang)}
         {/each}
+        {@render truncateOverlay(fallbackHunks.reduce((n, h) => n + h.lines.length, 0) > 20)}
       </div>
       {@const fallbackLineCount = fallbackHunks.reduce((n, h) => n + h.lines.length, 0)}
       {#if fallbackLineCount > 20}
         <button
           class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -633,16 +690,17 @@
     {#if isPlanFile && typeof tool.input?.content === "string"}
       {@const planText = tool.input.content as string}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={planText} />
+        {@render truncateOverlay(countLines(planText) > 20)}
       </div>
       {#if countLines(planText) > 20}
         <button
           class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -657,9 +715,9 @@
         writeResult!.originalFile,
       )}
       <div
-        class="diff-section overflow-x-auto overflow-y-auto {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="diff-section overflow-x-auto relative {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-y-hidden'}"
       >
         {#each adjustedWriteHunks as hunk}
           <div
@@ -669,12 +727,13 @@
           </div>
           {@html renderDiffHunk(hunk, lang)}
         {/each}
+        {@render truncateOverlay(adjustedWriteHunks.reduce((n, h) => n + h.lines.length, 0) > 20)}
       </div>
       {@const writePatchLines = adjustedWriteHunks.reduce((n, h) => n + h.lines.length, 0)}
       {#if writePatchLines > 20}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -686,23 +745,35 @@
       {@const content = String(tool.input.content)}
       {@const lines = content.split("\n")}
       {@const truncated = lines.length > 20}
-      {@const preview = truncated ? lines.slice(0, 20).join("\n") + "\n..." : content}
-      <div class="rounded bg-muted max-h-60 overflow-y-auto relative group/copy">
+      {@const displayContent =
+        !outputExpanded && truncated ? lines.slice(0, 20).join("\n") + "\n..." : content}
+      <div class="rounded bg-muted relative group/copy">
         <pre
           class="text-xs font-mono whitespace-pre-wrap p-2 leading-relaxed">{@html renderCodeWithLineNumbers(
-            preview,
+            displayContent,
             lang,
           )}</pre>
-        {#if truncated}
+        {#if truncated && !outputExpanded}
           <div class="px-2 pb-1.5 text-[10px] text-muted-foreground">
             {t("tool_linesTotal", { count: String(lines.length) })}
           </div>
         {/if}
+        {@render truncateOverlay(truncated)}
         <button
           class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(content)}>{copyFeedback ?? t("common_copy")}</button
         >
       </div>
+      {#if truncated}
+        <button
+          class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+          onclick={() => (outputExpanded = !outputExpanded)}
+        >
+          {outputExpanded
+            ? t("common_collapse")
+            : t("common_showAllLines", { count: String(lines.length) })}
+        </button>
+      {/if}
     {/if}
     {#if outputText}
       <div class="rounded bg-muted p-2 max-h-20 overflow-y-auto">
@@ -739,9 +810,9 @@
     </div>
     {#if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto relative group/copy {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative group/copy {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
@@ -749,11 +820,12 @@
           class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(outputText)}>{copyFeedback ?? t("common_copy")}</button
         >
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -784,16 +856,15 @@
       </div>
     </div>
     {#if outputText}
-      <div
-        class="rounded bg-muted p-2 overflow-y-auto {outputExpanded ? 'max-h-[80vh]' : 'max-h-60'}"
-      >
+      <div class="rounded bg-muted p-2 relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}">
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -827,16 +898,17 @@
     </div>
     {#if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -860,9 +932,9 @@
     </div>
     {#if webSearchResult}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto space-y-1 {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative space-y-1 {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         {#each webSearchResult.results as entry}
           {#if typeof entry !== "string" && entry.content}
@@ -879,20 +951,22 @@
             {/each}
           {/if}
         {/each}
+        {@render truncateOverlay(needsExpand)}
       </div>
     {:else if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
       </div>
     {/if}
     {#if needsExpand}
       <button
         class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-        onclick={() => (outputExpanded = !outputExpanded)}
+        onclick={toggleOutputExpand}
       >
         {outputExpanded
           ? t("common_collapse")
@@ -943,16 +1017,17 @@
     {/if}
     {#if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -963,9 +1038,7 @@
   {:else if tool.tool_name === "TodoWrite"}
     <!-- TodoWrite: todo list with status badges -->
     {#if todoResult}
-      <div
-        class="rounded bg-muted p-2 overflow-y-auto {outputExpanded ? 'max-h-[80vh]' : 'max-h-60'}"
-      >
+      <div class="rounded bg-muted p-2 relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}">
         <div class="space-y-1">
           {#each todoResult.newTodos as todo}
             <div class="flex items-center gap-2 text-xs">
@@ -990,11 +1063,12 @@
             </div>
           {/each}
         </div>
+        {@render truncateOverlay(todoResult.newTodos.length > 20)}
       </div>
       {#if todoResult.newTodos.length > 20}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -1002,10 +1076,22 @@
         </button>
       {/if}
     {:else if outputText}
-      <div class="rounded bg-muted p-2 max-h-60 overflow-y-auto">
+      <div
+        bind:this={fallbackRef}
+        class="rounded bg-muted p-2 relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
+      >
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
+        {@render truncateOverlay(fallbackNeedsExpand)}
       </div>
+      {#if fallbackNeedsExpand || outputExpanded}
+        <button
+          class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+          onclick={toggleOutputExpand}
+        >
+          {outputExpanded ? t("common_collapse") : t("common_showAll")}
+        </button>
+      {/if}
     {/if}
   {:else if tool.tool_name === "Skill"}
     <!-- Skill: command name + execution mode badge -->
@@ -1027,25 +1113,27 @@
     </div>
     {#if skillResult?.status === "forked" && skillResult.result}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={skillResult.result} />
+        {@render truncateOverlay(needsExpand)}
       </div>
     {:else if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
       </div>
     {/if}
     {#if needsExpand}
       <button
         class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-        onclick={() => (outputExpanded = !outputExpanded)}
+        onclick={toggleOutputExpand}
       >
         {outputExpanded
           ? t("common_collapse")
@@ -1065,16 +1153,17 @@
     {/if}
     {#if exitPlanResult?.plan}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={exitPlanResult.plan} />
+        {@render truncateOverlay(countLines(exitPlanResult.plan) > 20)}
       </div>
       {#if countLines(exitPlanResult.plan) > 20}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -1083,11 +1172,12 @@
       {/if}
     {:else if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto prose-chat {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-60'}"
+        class="rounded bg-muted p-2 relative prose-chat {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <MarkdownContent text={outputText} />
+        {@render truncateOverlay(needsExpand)}
       </div>
     {/if}
   {:else if tool.tool_name === "NotebookEdit"}
@@ -1107,17 +1197,18 @@
     {/if}
     {#if notebookResult?.new_source}
       {@const nbLang = notebookResult.language || "python"}
-      <div class="rounded bg-muted overflow-y-auto {outputExpanded ? 'max-h-[80vh]' : 'max-h-60'}">
+      <div class="rounded bg-muted relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}">
         <pre
           class="text-xs font-mono whitespace-pre-wrap p-2 leading-relaxed">{@html renderCodeWithLineNumbers(
             notebookResult.new_source,
             nbLang,
           )}</pre>
+        {@render truncateOverlay(countLines(notebookResult.new_source) > 20)}
       </div>
       {#if countLines(notebookResult.new_source) > 20}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")
@@ -1125,10 +1216,22 @@
         </button>
       {/if}
     {:else if outputText}
-      <div class="rounded bg-muted p-2 max-h-60 overflow-y-auto">
+      <div
+        bind:this={fallbackRef}
+        class="rounded bg-muted p-2 relative {outputExpanded ? '' : 'max-h-96 overflow-hidden'}"
+      >
         <pre
           class="text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground">{outputText}</pre>
+        {@render truncateOverlay(fallbackNeedsExpand)}
       </div>
+      {#if fallbackNeedsExpand || outputExpanded}
+        <button
+          class="w-full text-xs text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
+          onclick={toggleOutputExpand}
+        >
+          {outputExpanded ? t("common_collapse") : t("common_showAll")}
+        </button>
+      {/if}
     {/if}
   {:else if isTeamTool(tool.tool_name)}
     <TeamToolDetail {tool} />
@@ -1155,9 +1258,9 @@
     {/if}
     {#if outputText}
       <div
-        class="rounded bg-muted p-2 overflow-y-auto relative group/copy {outputExpanded
-          ? 'max-h-[80vh]'
-          : 'max-h-40'}"
+        class="rounded bg-muted p-2 relative group/copy {outputExpanded
+          ? ''
+          : 'max-h-96 overflow-hidden'}"
       >
         <div class="text-[10px] font-medium text-muted-foreground/60 mb-1 uppercase tracking-wider">
           {t("tool_output")}
@@ -1168,11 +1271,12 @@
           class="absolute top-1.5 right-1.5 text-[10px] text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 transition-opacity"
           onclick={() => handleCopy(outputText)}>{copyFeedback ?? t("common_copy")}</button
         >
+        {@render truncateOverlay(needsExpand)}
       </div>
       {#if needsExpand}
         <button
           class="w-full text-[10px] text-muted-foreground/60 hover:text-muted-foreground py-1 transition-colors"
-          onclick={() => (outputExpanded = !outputExpanded)}
+          onclick={toggleOutputExpand}
         >
           {outputExpanded
             ? t("common_collapse")

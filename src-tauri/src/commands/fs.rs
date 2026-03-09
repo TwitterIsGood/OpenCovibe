@@ -70,24 +70,35 @@ pub fn check_is_directory(path: String) -> bool {
     result
 }
 
-/// Maximum file size for drag-drop (100 MB)
-/// Business requirement: Prevent OOM on large binary files
-const MAX_DRAG_FILE_SIZE: u64 = 100 * 1024 * 1024;
+/// Maximum file size for base64 read (100 MB).
+/// Shared by chat drag-drop and Explorer image preview.
+const MAX_BASE64_FILE_SIZE: u64 = 100 * 1024 * 1024;
 
+/// Read a file as base64 with MIME detection.
+///
+/// **Path validation**: only enforced when `cwd` is `Some` (Explorer context).
+/// When `cwd` is `None` (chat drag-drop), any absolute path is accepted because
+/// the user explicitly initiated the drop. New call sites that browse the
+/// filesystem MUST pass `cwd` to get boundary enforcement.
 #[tauri::command]
-pub fn read_file_base64(path: String) -> Result<(String, String), String> {
-    let p = std::path::Path::new(&path);
-    log::debug!("[fs] read_file_base64: path={path}");
+pub fn read_file_base64(path: String, cwd: Option<String>) -> Result<(String, String), String> {
+    log::debug!("[fs] read_file_base64: path={path}, cwd={cwd:?}");
+    let validated = if cwd.is_some() {
+        super::files::validate_file_path(&path, cwd.as_deref())?
+    } else {
+        log::debug!("[fs] read_file_base64: no cwd, skipping path boundary check");
+        std::path::PathBuf::from(&path)
+    };
+    let p = validated.as_path();
     let meta = p
         .metadata()
         .map_err(|e| format!("Cannot stat {}: {}", path, e))?;
 
-    // Enforce 100MB business limit
-    if meta.len() > MAX_DRAG_FILE_SIZE {
+    if meta.len() > MAX_BASE64_FILE_SIZE {
         return Err(format!(
             "File too large ({} MB, max {} MB): {}",
             meta.len() / (1024 * 1024),
-            MAX_DRAG_FILE_SIZE / (1024 * 1024),
+            MAX_BASE64_FILE_SIZE / (1024 * 1024),
             path
         ));
     }
@@ -139,5 +150,77 @@ fn office_mime(ext: &str) -> Option<&'static str> {
         "potx" => Some("application/vnd.openxmlformats-officedocument.presentationml.template"),
         "potm" => Some("application/vnd.ms-powerpoint.template.macroEnabled.12"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// cwd=None (drag-drop): any absolute path should succeed without boundary check.
+    #[test]
+    fn read_file_base64_no_cwd_allows_any_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("test.png");
+        // Minimal 1x1 PNG
+        let png_bytes: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+            0x77, 0x53, 0xDE, // 1x1 RGB
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT
+            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xE2, 0x21,
+            0xBC, 0x33, // compressed pixel
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82, // IEND
+        ];
+        std::fs::File::create(&img)
+            .unwrap()
+            .write_all(png_bytes)
+            .unwrap();
+
+        let result = read_file_base64(img.to_string_lossy().into(), None);
+        assert!(result.is_ok(), "cwd=None should allow any path");
+        let (base64, mime) = result.unwrap();
+        assert!(!base64.is_empty());
+        assert_eq!(mime, "image/png");
+    }
+
+    /// cwd=Some: path outside the allowed directory should be rejected.
+    #[test]
+    fn read_file_base64_with_cwd_rejects_outside_path() {
+        let allowed_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_file = outside_dir.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+
+        let result = read_file_base64(
+            outside_file.to_string_lossy().into(),
+            Some(allowed_dir.path().to_string_lossy().into()),
+        );
+        assert!(
+            result.is_err(),
+            "cwd=Some should reject path outside allowed dir"
+        );
+    }
+
+    /// cwd=Some: path inside the allowed directory should succeed.
+    #[test]
+    fn read_file_base64_with_cwd_allows_inside_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hello.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let result = read_file_base64(
+            file.to_string_lossy().into(),
+            Some(dir.path().to_string_lossy().into()),
+        );
+        assert!(
+            result.is_ok(),
+            "cwd=Some should allow path inside allowed dir"
+        );
+        let (base64, mime) = result.unwrap();
+        assert!(!base64.is_empty());
+        assert!(mime.contains("text"), "expected text mime, got {}", mime);
     }
 }

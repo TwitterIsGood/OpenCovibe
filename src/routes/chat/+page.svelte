@@ -2538,6 +2538,10 @@
       if (behavior === "deny") {
         store.resolvePermissionDeny(requestId);
       }
+      // Optimistic local update: switch permission_prompt → running so UI shows progress
+      if (behavior === "allow") {
+        store.resolvePermissionAllow(requestId);
+      }
     } catch (e) {
       dbgWarn("chat", "permission respond failed:", e);
       // If the CLI rejected the response (e.g. session already idle after interrupt),
@@ -2545,7 +2549,9 @@
       if (behavior === "deny") {
         store.resolvePermissionDeny(requestId);
       }
+      // allow failure: don't change status — submitting timeout auto-resets (§5)
       store.error = String(e);
+      throw e; // Let component-side wrapper catch and unlock buttons
     }
   }
 
@@ -2629,6 +2635,7 @@
         [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
         exitPlanEntry.tool.input,
       );
+      store.resolvePermissionAllow(requestId);
 
       // 3. Wait for tool_end to deliver plan content (via pendingClearContextPlan)
       //    Poll briefly — tool_end should arrive within a few hundred ms
@@ -2663,6 +2670,7 @@
       dbgWarn("chat", "ExitPlanMode clear context failed:", e);
       store.pendingClearContextPlan = null;
       store.error = String(e);
+      throw e; // Let component-side wrapper catch and unlock buttons
     }
   }
 
@@ -3041,7 +3049,7 @@
             <!-- Timeline: chat messages + inline tool cards -->
             <div>
               {#if store.run?.parent_run_id}
-                <div class="mx-auto max-w-5xl px-8 py-2">
+                <div class="chat-content-width py-2">
                   <div
                     class="flex items-center gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400"
                   >
@@ -3071,7 +3079,7 @@
                 </div>
               {/if}
               {#if notificationVisible && latestNotification}
-                <div class="mx-auto max-w-5xl px-8 py-1">
+                <div class="chat-content-width py-1">
                   <div
                     class="flex items-center gap-2 text-xs text-muted-foreground bg-teal-500/5 border border-teal-500/20 rounded px-3 py-1.5 animate-fade-in"
                   >
@@ -3081,7 +3089,7 @@
                 </div>
               {/if}
               {#if toolNamesInTimeline.length >= 2}
-                <div class="mx-auto max-w-5xl px-8 py-2">
+                <div class="chat-content-width py-2">
                   <div class="flex flex-wrap items-center gap-1.5">
                     <button
                       class="rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors {!toolFilter
@@ -3117,12 +3125,12 @@
               {/if}
               {#each visibleTimeline as entry, i (entry.id)}
                 {#if !(burstHiddenIndices.has(i) && !toolBursts.has(i))}
-                  <div class:cv-auto={!IS_WEBKIT} class="group/msg">
+                  <div class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"} class="group/msg">
                     {#if batchGroups.has(i)}
                       {@const batch = batchGroups.get(i)}
                       {#if batch}
                         <div class="w-full py-1">
-                          <div class="mx-auto max-w-5xl px-8 pl-11">
+                          <div class="chat-content-width pl-7">
                             <BatchProgressBar tools={batch} />
                           </div>
                         </div>
@@ -3132,7 +3140,7 @@
                       {@const burst = toolBursts.get(i)}
                       {#if burst}
                         <div class="w-full py-1">
-                          <div class="mx-auto max-w-5xl px-8 pl-11">
+                          <div class="chat-content-width pl-7">
                             <ToolBurstHeader
                               {burst}
                               collapsed={effectiveCollapsed.has(burst.key)}
@@ -3146,7 +3154,7 @@
                       {@const tu = usageAnnotations.get(i)}
                       {#if tu}
                         <div class="w-full py-1.5">
-                          <div class="mx-auto max-w-5xl px-8">
+                          <div class="chat-content-width">
                             <div class="flex items-center gap-3">
                               <div class="h-px flex-1 bg-border/40"></div>
                               <span class="text-[10px] tabular-nums text-muted-foreground">
@@ -3177,7 +3185,7 @@
                         attachments={entry.attachments}
                       />
                       {#if entry.cliUuid && store.sessionAlive && !store.isRunning}
-                        <div class="relative mx-auto max-w-5xl px-8 pl-11 h-0">
+                        <div class="relative chat-content-width pl-7 h-0">
                           <button
                             type="button"
                             class="absolute top-0 flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]
@@ -3216,7 +3224,7 @@
                     {:else if entry.kind === "tool"}
                       {#if !burstHiddenIndices.has(i)}
                         <div class="w-full py-1" id="tool-{entry.tool.tool_use_id}">
-                          <div class="mx-auto max-w-5xl px-8 pl-11">
+                          <div class="chat-content-width pl-7">
                             <InlineToolCard
                               tool={entry.tool}
                               subTimeline={entry.subTimeline}
@@ -3244,7 +3252,7 @@
                       {/if}
                     {:else if entry.kind === "command_output"}
                       <div class="w-full py-2">
-                        <div class="mx-auto max-w-5xl px-8 pl-11">
+                        <div class="chat-content-width pl-7">
                           <div
                             class="command-output rounded-lg border border-border/40 bg-[#1a1b26] px-4 py-3 text-sm overflow-x-auto"
                           >
@@ -3269,7 +3277,7 @@
                       </div>
                     {:else if entry.kind === "separator"}
                       <div class="w-full py-3">
-                        <div class="mx-auto max-w-5xl px-8">
+                        <div class="chat-content-width">
                           <div class="flex items-center gap-3">
                             <div class="h-px flex-1 bg-amber-500/20"></div>
                             <span class="text-xs text-amber-500/70 font-medium whitespace-nowrap">
@@ -3290,7 +3298,7 @@
                   class="w-full py-3"
                   id={mi === rewindMarkers.length - 1 ? "rewind-marker-latest" : undefined}
                 >
-                  <div class="mx-auto max-w-5xl px-8">
+                  <div class="chat-content-width">
                     <div class="flex items-center gap-3">
                       <div class="h-px flex-1 bg-blue-500/20"></div>
                       <div class="flex items-center gap-2 text-xs text-blue-500/80 font-medium">
@@ -3342,7 +3350,7 @@
               <!-- Last turn usage annotation (after all entries) -->
               {#if lastTurnUsage && !store.isRunning}
                 <div class="w-full py-1.5">
-                  <div class="mx-auto max-w-5xl px-8">
+                  <div class="chat-content-width">
                     <div class="flex items-center gap-3">
                       <div class="h-px flex-1 bg-border/40"></div>
                       <span class="text-[10px] tabular-nums text-muted-foreground">
@@ -3364,7 +3372,7 @@
 
               <!-- Pending hook callbacks -->
               {#each store.hookEvents.filter((h) => h.status === "hook_pending") as hookEvent (hookEvent.request_id)}
-                <div class="mx-auto max-w-5xl px-8 pl-11">
+                <div class="chat-content-width pl-7">
                   <HookReviewCard {hookEvent} onRespond={handleHookCallbackRespond} />
                 </div>
               {/each}
@@ -3372,7 +3380,7 @@
               <!-- Thinking panel (extended thinking) -->
               {#if store.thinkingText}
                 <div class="w-full animate-fade-in">
-                  <div class="mx-auto max-w-5xl px-8 py-2">
+                  <div class="chat-content-width py-2">
                     <button
                       class="w-full text-left rounded-lg border border-blue-500/20 bg-blue-500/5 px-3 py-2 transition-colors group"
                       onclick={() => (thinkingExpanded = !thinkingExpanded)}
@@ -3430,7 +3438,7 @@
               <!-- Streaming text -->
               {#if store.streamingText}
                 <div class="w-full animate-fade-in">
-                  <div class="mx-auto max-w-5xl px-8 py-4">
+                  <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
                         class="flex h-5 w-5 items-center justify-center rounded-sm bg-orange-500/10 text-orange-500"
@@ -3461,7 +3469,7 @@
               <!-- Slash command processing indicator (before thinking kicks in) -->
               {#if processingSlashCmd && !thinkingVisible && !store.streamingText && !store.thinkingText}
                 <div class="w-full animate-fade-in">
-                  <div class="mx-auto max-w-5xl px-8 py-2">
+                  <div class="chat-content-width py-2">
                     <div class="flex items-center gap-2 text-sm text-muted-foreground">
                       <div
                         class="h-3.5 w-3.5 rounded-full border-2 border-border border-t-muted-foreground animate-spin"
@@ -3475,7 +3483,7 @@
               <!-- Thinking indicator (debounced 300ms to avoid flash on fast CLI commands) -->
               {#if thinkingVisible && !store.thinkingText}
                 <div class="w-full animate-fade-in">
-                  <div class="mx-auto max-w-5xl px-8 py-4">
+                  <div class="chat-content-width py-4">
                     <div class="mb-1.5 flex items-center gap-2">
                       <div
                         class="flex h-5 w-5 items-center justify-center rounded-sm bg-orange-500/10 text-orange-500"

@@ -9,7 +9,10 @@ use std::path::PathBuf;
 /// - The global `working_directory` from user settings (if set)
 /// - Any per-agent `working_directory` from agent settings
 /// - The caller-provided `extra_allowed` directory (e.g. frontend project cwd)
-fn validate_file_path(path: &str, extra_allowed: Option<&str>) -> Result<PathBuf, String> {
+pub(crate) fn validate_file_path(
+    path: &str,
+    extra_allowed: Option<&str>,
+) -> Result<PathBuf, String> {
     let requested = PathBuf::from(path);
 
     // Defense-in-depth: reject raw traversal patterns

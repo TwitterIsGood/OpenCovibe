@@ -1775,6 +1775,54 @@ export class SessionStore {
     }
   }
 
+  /** Optimistic local update: resolve a permission_prompt tool to running.
+   *  Called after Allow IPC succeeds. Skips AskUserQuestion tools (interactive). */
+  resolvePermissionAllow(requestId: string): void {
+    dbg("store", "resolvePermissionAllow", { requestId });
+    // Main timeline
+    const idx = this.timeline.findIndex(
+      (e) =>
+        e.kind === "tool" &&
+        e.tool.status === "permission_prompt" &&
+        e.tool.permission_request_id === requestId,
+    );
+    if (idx >= 0) {
+      const old = this.timeline[idx] as Extract<TimelineEntry, { kind: "tool" }>;
+      // AskUserQuestion running = interactive question card, switching back would cause double-submit
+      if (old.tool.tool_name === "AskUserQuestion") return;
+      const u = [...this.timeline];
+      u[idx] = {
+        ...old,
+        tool: { ...old.tool, status: "running" as const },
+      };
+      this.timeline = u;
+      return;
+    }
+    // subTimeline
+    for (let pIdx = 0; pIdx < this.timeline.length; pIdx++) {
+      const entry = this.timeline[pIdx];
+      if (entry.kind !== "tool" || !entry.subTimeline) continue;
+      const cIdx = entry.subTimeline.findIndex(
+        (e) =>
+          e.kind === "tool" &&
+          e.tool.status === "permission_prompt" &&
+          e.tool.permission_request_id === requestId,
+      );
+      if (cIdx < 0) continue;
+      const oldChild = entry.subTimeline[cIdx] as Extract<TimelineEntry, { kind: "tool" }>;
+      if (oldChild.tool.tool_name === "AskUserQuestion") return;
+      const newSub = [...entry.subTimeline];
+      newSub[cIdx] = {
+        ...oldChild,
+        tool: { ...oldChild.tool, status: "running" as const },
+      };
+      const u = [...this.timeline];
+      u[pIdx] = { ...entry, subTimeline: newSub };
+      this.timeline = u;
+      return;
+    }
+  }
+
   /** Handle PTY exit event. */
   handlePtyExit(): void {
     const target: SessionPhase =
@@ -1823,6 +1871,61 @@ export class SessionStore {
   /** Whether to skip tools (HookEvent[]) mirror writes. Stream mode tools are in timeline only. */
   private _isStreamMode(ctx: ReduceCtx | null): boolean {
     return ctx ? ctx.isStream : this.useStreamSession;
+  }
+
+  /**
+   * Resolve stale tool entries to "error" across main timeline and all subTimelines.
+   * Used by idle/spawning/control_cancelled cleanup.
+   */
+  private _resolveStaleTools(
+    predicate: (tool: BusToolItem) => boolean,
+    ctx: ReduceCtx | null,
+  ): void {
+    const tl = ctx ? ctx.tl : this.timeline;
+    let cloned = !!ctx; // ctx.tl is already a mutable reference
+
+    for (let i = 0; i < tl.length; i++) {
+      const e = tl[i];
+      if (e.kind !== "tool") continue;
+
+      // Top-level tool
+      let parentUpdated = e;
+      if (predicate(e.tool)) {
+        if (!cloned) {
+          this.timeline = [...this.timeline];
+          cloned = true;
+        }
+        parentUpdated = { ...e, tool: { ...e.tool, status: "error" as const } };
+        const target = ctx ? ctx.tl : this.timeline;
+        target[i] = parentUpdated;
+        dbg("store", "resolved stale tool", { id: e.id, name: e.tool.tool_name });
+        // Don't continue: even if top-level matched, still scan and converge subTimeline children
+      }
+
+      // subTimeline children
+      const sub = parentUpdated.subTimeline;
+      if (!sub) continue;
+      let subChanged = false;
+      let newSub = sub;
+      for (let j = 0; j < newSub.length; j++) {
+        const child = newSub[j];
+        if (child.kind !== "tool" || !predicate(child.tool)) continue;
+        if (!subChanged) {
+          newSub = [...newSub];
+          subChanged = true;
+        }
+        newSub[j] = { ...child, tool: { ...child.tool, status: "error" as const } };
+        dbg("store", "resolved stale sub-tool", { id: child.id, name: child.tool.tool_name });
+      }
+      if (subChanged) {
+        if (!cloned) {
+          this.timeline = [...this.timeline];
+          cloned = true;
+        }
+        const target = ctx ? ctx.tl : this.timeline;
+        target[i] = { ...parentUpdated, subTimeline: newSub };
+      }
+    }
   }
 
   /** Core reducer: apply a single bus event. When ctx is null, mutates $state directly.
@@ -2384,61 +2487,31 @@ export class SessionStore {
           if (ctx) ctx.error = ev.error;
           else this.error = ev.error;
         }
-        // Resolve stale permission_prompt tools on idle transition.
+        // Resolve stale permission_prompt / optimistic-running tools on idle transition.
         // When CLI goes idle (turn complete), any remaining permission_prompt cards are stale
         // (e.g. user interrupted during a pending can_use_tool request).
-        // Resolve them to "error" so buttons are removed and card shows cancelled state.
+        // Also resolve "optimistic running" tools (have permission_request_id) that never got a tool_end.
+        // Covers both main timeline and subTimelines.
         if (ev.state === "idle") {
-          const tlIdle = getTl();
-          let idleChanged = false;
-          for (let i = 0; i < tlIdle.length; i++) {
-            const e = tlIdle[i];
-            if (e.kind === "tool" && e.tool.status === "permission_prompt") {
-              const updated: TimelineEntry = {
-                ...e,
-                tool: { ...e.tool, status: "error" as const },
-              };
-              if (ctx) {
-                ctx.tl[i] = updated;
-              } else {
-                if (!idleChanged) {
-                  // Clone once, mutate in-place for multiple hits
-                  this.timeline = [...this.timeline];
-                  idleChanged = true;
-                }
-                this.timeline[i] = updated;
-              }
-              dbg("store", "run_state idle: resolved stale permission_prompt", {
-                tool_use_id: e.id,
-                tool_name: e.tool.tool_name,
-              });
-            }
-          }
+          this._resolveStaleTools(
+            (t) =>
+              t.status === "permission_prompt" ||
+              (t.status === "running" && !!t.permission_request_id),
+            ctx,
+          );
         }
-        // Resolve permission_denied tools on session restart (spawning).
+        // Resolve permission_denied / permission_prompt tools on session restart (spawning).
         // After approval, the session restarts — those cards are no longer actionable.
         // Runs in both live and replay mode so replayed sessions show resolved state.
+        // Covers both main timeline and subTimelines.
         if (ev.state === "spawning") {
-          const tl = getTl();
-          for (let i = 0; i < tl.length; i++) {
-            const e = tl[i];
-            if (
-              e.kind === "tool" &&
-              (e.tool.status === "permission_denied" || e.tool.status === "permission_prompt")
-            ) {
-              const updated: TimelineEntry = {
-                ...e,
-                tool: { ...e.tool, status: "error" as const },
-              };
-              if (ctx) {
-                ctx.tl[i] = updated;
-              } else {
-                const u = [...this.timeline];
-                u[i] = updated;
-                this.timeline = u;
-              }
-            }
-          }
+          this._resolveStaleTools(
+            (t) =>
+              t.status === "permission_denied" ||
+              t.status === "permission_prompt" ||
+              (t.status === "running" && !!t.permission_request_id),
+            ctx,
+          );
         }
         break;
 
@@ -2843,27 +2916,14 @@ export class SessionStore {
       }
 
       case "control_cancelled": {
-        // Resolve any permission_prompt tool card with matching request_id to "error"
-        const tl3 = getTl();
-        const idx3 = tl3.findIndex(
-          (e) =>
-            e.kind === "tool" &&
-            e.tool.status === "permission_prompt" &&
-            e.tool.permission_request_id === ev.request_id,
+        // Resolve any permission_prompt or optimistic-running tool with matching request_id to "error"
+        // Covers both main timeline and subTimelines.
+        this._resolveStaleTools(
+          (t) =>
+            (t.status === "permission_prompt" || t.status === "running") &&
+            t.permission_request_id === ev.request_id,
+          ctx,
         );
-        if (idx3 >= 0) {
-          const old = tl3[idx3] as Extract<TimelineEntry, { kind: "tool" }>;
-          const updated: TimelineEntry = {
-            ...old,
-            tool: { ...old.tool, status: "error" as const },
-          };
-          if (ctx) ctx.tl[idx3] = updated;
-          else {
-            const u = [...this.timeline];
-            u[idx3] = updated;
-            this.timeline = u;
-          }
-        }
         // Also resolve pending hook callbacks
         this.hookEvents = this.hookEvents.map((h) =>
           h.request_id === ev.request_id && h.status === "hook_pending"

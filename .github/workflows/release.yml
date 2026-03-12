@@ -21,7 +21,7 @@ jobs:
             asset_glob: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            asset_glob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +48,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{ matrix.target }}
+
+      - name: Zip Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exeDir = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $exe = Get-ChildItem "$exeDir/*.exe" | Select-Object -First 1
+          $zipName = [System.IO.Path]::ChangeExtension($exe.Name, ".zip")
+          Compress-Archive -Path $exe.FullName -DestinationPath "$exeDir/$zipName"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

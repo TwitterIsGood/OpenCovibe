@@ -11,7 +11,6 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import {
     bracketMatching,
-    foldGutter,
     syntaxHighlighting,
     defaultHighlightStyle,
     LanguageDescription,
@@ -137,7 +136,6 @@
         highlightActiveLineGutter(),
         highlightActiveLine(),
         bracketMatching(),
-        foldGutter(),
         history(),
         keymap.of([
           {

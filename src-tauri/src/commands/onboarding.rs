@@ -60,10 +60,67 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("Homebrew not installed".into())
             },
+            note: None,
         });
     }
 
-    // 2. npm — requires Node.js 18+
+    // 2. Windows-native install methods (PowerShell, WinGet, CMD curl)
+    #[cfg(windows)]
+    {
+        // PowerShell installer (recommended on Windows)
+        // Prefer "powershell" (Windows PowerShell 5.1), fall back to "pwsh" (PowerShell 7+)
+        let ps_bin = if which_binary("powershell") {
+            Some("powershell")
+        } else if which_binary("pwsh") {
+            Some("pwsh")
+        } else {
+            None
+        };
+        methods.push(InstallMethod {
+            id: "powershell".into(),
+            name: "PowerShell".into(),
+            command: "irm https://claude.ai/install.ps1 | iex".into(),
+            available: ps_bin.is_some(),
+            unavailable_reason: if ps_bin.is_some() {
+                None
+            } else {
+                Some("PowerShell not found".into())
+            },
+            note: Some("Auto-updates".into()),
+        });
+
+        // WinGet (Win11 built-in, Win10 may need install)
+        let has_winget = which_binary("winget");
+        methods.push(InstallMethod {
+            id: "winget".into(),
+            name: "WinGet".into(),
+            command: "winget install --id Anthropic.ClaudeCode -e --source winget".into(),
+            available: has_winget,
+            unavailable_reason: if has_winget {
+                None
+            } else {
+                Some("WinGet not found".into())
+            },
+            note: Some("Manual update: winget upgrade Anthropic.ClaudeCode".into()),
+        });
+
+        // CMD curl (fallback — Win10 1803+ has curl built-in)
+        let has_curl = which_binary("curl");
+        methods.push(InstallMethod {
+            id: "cmd".into(),
+            name: "CMD (curl)".into(),
+            command: "cmd /d /c \"curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del /f /q install.cmd\"".into(),
+            available: has_curl,
+            unavailable_reason: if has_curl {
+                None
+            } else {
+                Some("curl not found".into())
+            },
+            note: None,
+        });
+    }
+
+    // 3. npm — deprecated, requires Node.js 18+
     let has_npm = check_npm_available().await;
     methods.push(InstallMethod {
         id: "npm".into(),
@@ -75,9 +132,10 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
         } else {
             Some("Requires Node.js 18+".into())
         },
+        note: Some("Deprecated — use native installer instead".into()),
     });
 
-    // 3. Native install (curl script) — Unix only (curl | bash)
+    // 4. Native install (curl script) — Unix only (curl | bash)
     #[cfg(not(windows))]
     {
         let has_curl = which_binary("curl");
@@ -91,6 +149,7 @@ pub async fn detect_install_methods() -> Result<Vec<InstallMethod>, String> {
             } else {
                 Some("curl not found".into())
             },
+            note: None,
         });
     }
 

@@ -419,7 +419,10 @@
         {:else if editorMode === "rendered" && isPreviewable}
           <div class="flex-1 overflow-y-auto p-4 h-full">
             {#if fileContent}
-              <MarkdownContent text={fileContent} />
+              <MarkdownContent
+                text={fileContent}
+                basePath={selectedFilePath.replace(/[/\\][^/\\]*$/, "")}
+              />
             {:else}
               <p class="text-sm text-muted-foreground italic">{t("explorer_emptyFile")}</p>
             {/if}

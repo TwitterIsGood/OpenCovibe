@@ -1,13 +1,17 @@
 <script lang="ts">
   import { renderMarkdown } from "$lib/utils/markdown";
+  import { readFileBase64 } from "$lib/api";
+  import { dbg, dbgWarn } from "$lib/utils/debug";
 
   let {
     text = "",
     streaming = false,
+    basePath = "",
     class: className = "",
   }: {
     text?: string;
     streaming?: boolean;
+    basePath?: string;
     class?: string;
   } = $props();
 
@@ -59,6 +63,32 @@
     return () => {
       cleanups.forEach((fn) => fn());
     };
+  });
+
+  // Resolve relative image paths against basePath (for Explorer file preview)
+  $effect(() => {
+    if (!container || !html || !basePath) return;
+
+    const imgs = container.querySelectorAll<HTMLImageElement>("img");
+    for (const img of imgs) {
+      const src = img.getAttribute("src");
+      if (!src) continue;
+      // Skip URLs, data URIs, and absolute paths
+      if (/^(https?:|data:|blob:)/.test(src)) continue;
+      if (src.startsWith("/") || /^[a-zA-Z]:/.test(src)) continue;
+
+      // Construct absolute path: normalize to forward slashes for Rust PathBuf
+      const abs = basePath.replace(/\\/g, "/") + "/" + src.replace(/\\/g, "/");
+      dbg("markdown", "resolve-img", { src, abs });
+
+      readFileBase64(abs)
+        .then(([base64, mime]) => {
+          img.src = `data:${mime};base64,${base64}`;
+        })
+        .catch((e) => {
+          dbgWarn("markdown", "img-load-failed", { src, abs, error: e });
+        });
+    }
   });
 </script>
 

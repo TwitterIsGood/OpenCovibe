@@ -47,6 +47,9 @@ const KNOWN_COMMAND_DESCRIPTIONS: Record<string, string> = {
   "add-dir": "Add a directory to the workspace",
 };
 
+/** Marker for context-cleared separators. Used by reducer, renderer, and dimming logic. */
+export const CONTEXT_CLEARED_MARKER = "__context_cleared__";
+
 // ── Virtual commands (not returned by CLI initialize) ──
 
 /** App-handled commands injected into the slash menu. Marked with `_virtual: true`. */
@@ -160,6 +163,13 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     aliases: ["undo"],
     _virtual: true,
     _action: "rewind",
+  },
+  {
+    name: "clear",
+    description: "Clear conversation history and free up context",
+    aliases: [],
+    _virtual: true,
+    _action: "clear-context",
   },
   {
     name: "permissions",

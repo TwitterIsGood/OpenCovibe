@@ -2018,6 +2018,118 @@ describe("SessionStore reducer", () => {
     });
   });
 
+  describe("elicitation_prompt", () => {
+    it("adds to pendingElicitations map keyed by request_id", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-elicit-1",
+        mcp_server_name: "github-mcp",
+        message: "Please authenticate",
+        mode: "form",
+        requested_schema: {
+          type: "object",
+          properties: {
+            token: { type: "string", title: "Access Token" },
+          },
+          required: ["token"],
+        },
+      } as BusEvent);
+
+      expect(store.pendingElicitations.size).toBe(1);
+      expect(store.pendingElicitations.has("req-elicit-1")).toBe(true);
+      expect(store.hasElicitation).toBe(true);
+      expect(store.isThinking).toBe(false);
+      expect(store.isActivelyRunning).toBe(false);
+
+      const state = store.pendingElicitations.get("req-elicit-1")!;
+      expect(state.mcpServerName).toBe("github-mcp");
+      expect(state.message).toBe("Please authenticate");
+      expect(state.mode).toBe("form");
+    });
+
+    it("control_cancelled removes from pendingElicitations", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-1",
+          mcp_server_name: "github-mcp",
+          message: "Please authenticate",
+        } as BusEvent,
+        { type: "control_cancelled", run_id: "run-1", request_id: "req-elicit-1" },
+      ]);
+
+      expect(store.pendingElicitations.size).toBe(0);
+      expect(store.hasElicitation).toBe(false);
+    });
+
+    it("removeElicitation clears specific entry", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEventBatch([
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-1",
+          mcp_server_name: "server-a",
+          message: "Auth A",
+        } as BusEvent,
+        {
+          type: "elicitation_prompt",
+          run_id: "run-1",
+          request_id: "req-elicit-2",
+          mcp_server_name: "server-b",
+          message: "Auth B",
+        } as BusEvent,
+      ]);
+
+      expect(store.pendingElicitations.size).toBe(2);
+      store.removeElicitation("req-elicit-1");
+      expect(store.pendingElicitations.size).toBe(1);
+      expect(store.pendingElicitations.has("req-elicit-2")).toBe(true);
+    });
+
+    it("_clearContentState clears all pending elicitations", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-elicit-1",
+        mcp_server_name: "test",
+        message: "test",
+      } as BusEvent);
+
+      expect(store.hasElicitation).toBe(true);
+
+      // Trigger _clearContentState via reset
+      store.reset();
+      expect(store.pendingElicitations.size).toBe(0);
+    });
+
+    it("isThinking returns false when elicitation pending", () => {
+      store.run = makeRun("run-1");
+      store.phase = "running";
+      // Without elicitation: isThinking should be true (running, no streaming text)
+      expect(store.isThinking).toBe(true);
+
+      store.applyEvent({
+        type: "elicitation_prompt",
+        run_id: "run-1",
+        request_id: "req-1",
+        mcp_server_name: "test",
+        message: "test",
+      } as BusEvent);
+
+      expect(store.isThinking).toBe(false);
+    });
+  });
+
   describe("permission_prompt suggestions data chain", () => {
     it("permission_prompt merges suggestions into tool entry", () => {
       store.run = makeRun("run-1");
@@ -3546,6 +3658,7 @@ describe("SessionStore reducer", () => {
       { name: "ask-user-question", runId: "run-5", events: askUserQuestionEvents },
       { name: "subagent-task", runId: "run-sub", events: subagentTaskEvents },
       { name: "team-session", runId: "run-1", events: teamSessionEvents },
+      { name: "protocol-events", runId: "run-1", events: protocolEvents },
     ];
 
     for (const { name, runId, events } of strictFixtures) {
@@ -3916,6 +4029,217 @@ describe("SessionStore reducer", () => {
         await testStore.resumeSession("run-res-3", "resume");
 
         expect(mockDeleteSnapshot).toHaveBeenCalledWith("run-res-3");
+        warnSpy.mockClear();
+      });
+    });
+
+    // ── Idle snapshot paths ──
+
+    describe("idle session snapshot", () => {
+      it("snapshot hit (seq>0) → skip getBusEvents, phase = idle", async () => {
+        const idleRun = makeRun("run-idle-1", { status: "idle", agent: "claude" });
+        mockGetRun.mockResolvedValue(idleRun);
+
+        // Build a snapshot with seq > 0
+        const refStore = new SessionStore();
+        refStore.run = idleRun;
+        refStore.phase = "idle";
+        refStore.applyEventBatch(simpleChatEvents as BusEvent[]);
+        // Manually set _lastProcessedSeq > 0 to simulate a real snapshot
+        (refStore as any)._lastProcessedSeq = 42;
+        const snapshotBody = (refStore as any)._buildSnapshot();
+
+        mockReadSnapshot.mockResolvedValue(snapshotBody);
+
+        const testStore = new SessionStore();
+        await testStore.loadRun("run-idle-1");
+
+        expect(mockReadSnapshot).toHaveBeenCalledWith("run-idle-1", "idle");
+        expect(mockGetBusEvents).not.toHaveBeenCalled();
+        expect(testStore.phase).toBe("idle");
+        expect(testStore.timeline.length).toBeGreaterThan(0);
+        warnSpy.mockClear();
+      });
+
+      it("snapshot hit (seq=0) → deleteSnapshot + full replay", async () => {
+        vi.useFakeTimers();
+        const idleRun = makeRun("run-idle-2", { status: "idle", agent: "claude" });
+        mockGetRun.mockResolvedValue(idleRun);
+
+        // Build a snapshot with seq = 0 (no reliable seq)
+        const refStore = new SessionStore();
+        refStore.run = idleRun;
+        refStore.phase = "idle";
+        refStore.applyEventBatch(simpleChatEvents as BusEvent[]);
+        (refStore as any)._lastProcessedSeq = 0; // seq=0
+        const snapshotBody = (refStore as any)._buildSnapshot();
+
+        mockReadSnapshot.mockResolvedValue(snapshotBody);
+        mockGetBusEvents.mockResolvedValue(simpleChatEvents);
+
+        const testStore = new SessionStore();
+        await testStore.loadRun("run-idle-2");
+
+        // seq=0 → snapshot skipped, stale entry deleted
+        expect(mockDeleteSnapshot).toHaveBeenCalledWith("run-idle-2");
+        // Full replay via getBusEvents
+        expect(mockGetBusEvents).toHaveBeenCalledWith("run-idle-2");
+        expect(testStore.timeline.length).toBeGreaterThan(0);
+        // Flush deferred _saveSnapshotToIdb
+        vi.advanceTimersByTime(1);
+        vi.useRealTimers();
+        warnSpy.mockClear();
+      });
+
+      it("snapshot miss → write snapshot for idle session", async () => {
+        vi.useFakeTimers();
+        const idleRun = makeRun("run-idle-3", { status: "idle", agent: "claude" });
+        mockGetRun.mockResolvedValue(idleRun);
+        mockReadSnapshot.mockResolvedValue(null);
+        mockGetBusEvents.mockResolvedValue(simpleChatEvents);
+
+        const testStore = new SessionStore();
+        await testStore.loadRun("run-idle-3");
+
+        // Flush deferred _saveSnapshotToIdb
+        vi.advanceTimersByTime(1);
+        expect(mockWriteSnapshot).toHaveBeenCalled();
+        expect(testStore.timeline.length).toBeGreaterThan(0);
+        vi.useRealTimers();
+        warnSpy.mockClear();
+      });
+
+      it("idle→running transition → snapshot write blocked by status check", async () => {
+        vi.useFakeTimers();
+        const s = new SessionStore();
+        s.run = makeRun("run-idle-race", { status: "idle", agent: "claude" });
+        s.phase = "idle";
+        s.applyEventBatch(simpleChatEvents as BusEvent[]);
+        (s as any)._lastProcessedSeq = 10;
+
+        // Trigger idle snapshot write (deferred via setTimeout)
+        (s as any)._saveSnapshotToIdb("run-idle-race");
+
+        // Simulate status change before setTimeout fires
+        s.run = { ...s.run!, status: "running" };
+        vi.advanceTimersByTime(1);
+
+        // writeSnapshot should NOT have been called (status changed from idle→running)
+        expect(mockWriteSnapshot).not.toHaveBeenCalled();
+        vi.useRealTimers();
+        warnSpy.mockClear();
+      });
+
+      it("consecutive idle with no new events → _lastSnapshotSeq throttles write", () => {
+        const s = new SessionStore();
+        s.run = makeRun("run-idle-throttle", { status: "running", agent: "claude" });
+        s.phase = "running";
+
+        // First idle transition: should write
+        (s as any)._lastProcessedSeq = 5;
+        (s as any)._lastSnapshotSeq = 0;
+        const idleEvent = {
+          type: "run_state",
+          run_id: "run-idle-throttle",
+          state: "idle",
+          error: null,
+          exit_code: null,
+        } as BusEvent;
+        s.applyEvent(idleEvent);
+        expect((s as any)._lastSnapshotSeq).toBe(5); // Updated
+
+        // Second idle (no new events, seq unchanged): should NOT write
+        // Reset to running first
+        s.run = { ...s.run!, status: "running" };
+        s.applyEvent({
+          type: "run_state",
+          run_id: "run-idle-throttle",
+          state: "running",
+          error: null,
+          exit_code: null,
+        } as BusEvent);
+        // Back to idle with same seq
+        s.run = { ...s.run!, status: "running" };
+        s.applyEvent(idleEvent);
+        // _lastSnapshotSeq should still be 5 (not updated, seq didn't change)
+        expect((s as any)._lastSnapshotSeq).toBe(5);
+        warnSpy.mockClear();
+      });
+    });
+
+    // ── Index fallback tests ──
+
+    describe("reducer index fallback", () => {
+      it("_findToolIdx fallback still correctly updates tool state", () => {
+        const s = new SessionStore();
+        s.run = makeRun("run-idx-1");
+        s.phase = "running";
+
+        // Add a tool via tool_start
+        s.applyEvent({
+          type: "tool_start",
+          run_id: "run-idx-1",
+          tool_use_id: "tool-fb-1",
+          tool_name: "Bash",
+          input: { command: "ls" },
+        });
+
+        // Corrupt the index to force fallback
+        (s as any)._toolTlIndex.clear();
+
+        // tool_end should still work via findIndex fallback
+        s.applyEvent({
+          type: "tool_end",
+          run_id: "run-idx-1",
+          tool_use_id: "tool-fb-1",
+          tool_name: "Bash",
+          output: { result: "ok" },
+          status: "success",
+        });
+
+        const tool = s.timeline.find((e) => e.kind === "tool") as Extract<
+          TimelineEntry,
+          { kind: "tool" }
+        >;
+        expect(tool).toBeDefined();
+        expect(tool.tool.status).toBe("success");
+        // dbgWarn should have been called for the index miss
+        warnSpy.mockClear();
+      });
+
+      it("seq=0 snapshot deleted, subsequent load does not re-hit stale entry", async () => {
+        vi.useFakeTimers();
+        const idleRun = makeRun("run-no-rehit", { status: "idle", agent: "claude" });
+        mockGetRun.mockResolvedValue(idleRun);
+
+        // First load: seq=0 snapshot
+        const refStore = new SessionStore();
+        refStore.run = idleRun;
+        refStore.phase = "idle";
+        refStore.applyEventBatch(simpleChatEvents as BusEvent[]);
+        (refStore as any)._lastProcessedSeq = 0;
+        const staleBody = (refStore as any)._buildSnapshot();
+
+        mockReadSnapshot.mockResolvedValueOnce(staleBody);
+        mockGetBusEvents.mockResolvedValue(simpleChatEvents);
+
+        const testStore = new SessionStore();
+        await testStore.loadRun("run-no-rehit");
+
+        // deleteSnapshot called for seq=0
+        expect(mockDeleteSnapshot).toHaveBeenCalledWith("run-no-rehit");
+
+        // Second load: snapshot gone (readSnapshot returns null)
+        mockReadSnapshot.mockResolvedValueOnce(null);
+        mockGetBusEvents.mockResolvedValue(simpleChatEvents);
+
+        const testStore2 = new SessionStore();
+        await testStore2.loadRun("run-no-rehit");
+
+        // Normal full replay — no snapshot hit
+        expect(testStore2.timeline.length).toBeGreaterThan(0);
+        vi.advanceTimersByTime(1);
+        vi.useRealTimers();
         warnSpy.mockClear();
       });
     });

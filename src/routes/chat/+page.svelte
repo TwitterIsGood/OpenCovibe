@@ -50,6 +50,7 @@
   import McpStatusPanel from "$lib/components/McpStatusPanel.svelte";
   import PromptInput from "$lib/components/PromptInput.svelte";
   import PermissionPanel from "$lib/components/PermissionPanel.svelte";
+  import ElicitationDialog from "$lib/components/ElicitationDialog.svelte";
   import AuthSourceBadge from "$lib/components/AuthSourceBadge.svelte";
 
   import ToolActivity from "$lib/components/ToolActivity.svelte";
@@ -70,7 +71,11 @@
   import { ansiToHtml, hasAnsiCodes } from "$lib/utils/ansi";
   import { randomSpinnerVerb } from "$lib/utils/spinner-verbs";
   import { type TurnUsage, classifyError } from "$lib/stores/types";
-  import { mergeWithVirtual, buildHelpText } from "$lib/utils/slash-commands";
+  import {
+    mergeWithVirtual,
+    buildHelpText,
+    CONTEXT_CLEARED_MARKER,
+  } from "$lib/utils/slash-commands";
   import { executeAddDir } from "$lib/utils/add-dir";
   import { buildDoctorReport } from "$lib/utils/doctor";
   import type { RewindCandidate, RewindMarker } from "$lib/utils/rewind";
@@ -603,7 +608,7 @@
 
   let welcomeVisible = $derived(store.timeline.length === 0 && !store.streamingText && !store.run);
 
-  let inputBlockedByPermission = $derived(store.hasPendingPermission);
+  let inputBlockedByPermission = $derived(store.hasPendingPermission || store.hasElicitation);
   let pendingToolPermissions = $derived(store.pendingToolPermissions);
   let showPermissionPanel = $derived(pendingToolPermissions.length > 0 && store.sessionAlive);
 
@@ -2261,6 +2266,29 @@
           }),
         );
       }
+    } else if (action === "clear-context") {
+      if (!store.run || !store.sessionAlive) {
+        appendCommandOutput(t("chat_noActiveSession"));
+        return;
+      }
+      if (!store.useStreamSession) {
+        appendCommandOutput(t("chat_clearNotSupported"));
+        return;
+      }
+      if (store.isRunning) {
+        appendCommandOutput(t("chat_clearSessionBusy"));
+        return;
+      }
+      dbg("chat", "clear-context: stopping session", { runId: store.run.id });
+      try {
+        await store.stop();
+        dbg("chat", "clear-context: navigating to fresh chat");
+        goto("/chat", { replaceState: true });
+        window.dispatchEvent(new Event("ocv:runs-changed"));
+      } catch (e) {
+        dbgWarn("chat", "clear-context failed", e);
+        store.error = String(e);
+      }
     } else if (action === "rewind") {
       if (!store.run) {
         appendCommandOutput(t("rewind_noSession"));
@@ -2698,6 +2726,25 @@
     }
   }
 
+  async function handleElicitationRespond(
+    requestId: string,
+    action: "accept" | "decline" | "cancel",
+    content?: Record<string, unknown>,
+  ) {
+    if (!store.run || !store.sessionAlive) return;
+    const runId = store.run.id;
+    dbg("chat", "elicitation respond", { runId, requestId, action });
+    try {
+      await api.respondElicitation(runId, requestId, action, content);
+      // Cleanup after successful response — not optimistic, avoids card loss on failure
+      const { resolveElicitationOptimistic } = await import("$lib/utils/resolve-elicitation");
+      resolveElicitationOptimistic(store, runId, requestId);
+    } catch (e) {
+      dbgWarn("chat", "elicitation respond failed:", e);
+      store.error = String(e);
+    }
+  }
+
   // O(1) lookup: timeline entry id → index
   let timelineIdIndex = $derived.by(() => {
     const map = new Map<string, number>();
@@ -2705,6 +2752,15 @@
       map.set(store.timeline[i].id, i);
     }
     return map;
+  });
+
+  // ID of the last context-cleared separator (for dimming messages above it)
+  let lastClearSepId = $derived.by(() => {
+    for (let i = store.timeline.length - 1; i >= 0; i--) {
+      const e = store.timeline[i];
+      if (e.kind === "separator" && e.content === CONTEXT_CLEARED_MARKER) return e.id;
+    }
+    return null;
   });
 
   // Latest plan tool card's tool_use_id (for auto-expand)
@@ -3264,6 +3320,9 @@
                     id="msg-{entry.ts}"
                     class:cv-auto={!IS_WEBKIT && entry.kind !== "tool"}
                     class="group/msg"
+                    class:opacity-40={lastClearSepId !== null &&
+                      (timelineIdIndex.get(entry.id) ?? 0) <
+                        (timelineIdIndex.get(lastClearSepId) ?? 0)}
                   >
                     {#if batchGroups.has(i)}
                       {@const batch = batchGroups.get(i)}
@@ -3400,7 +3459,9 @@
                           <div class="flex items-center gap-3">
                             <div class="h-px flex-1 bg-amber-500/20"></div>
                             <span class="text-xs text-amber-500/70 font-medium whitespace-nowrap">
-                              {entry.content}
+                              {entry.content === CONTEXT_CLEARED_MARKER
+                                ? t("chat_contextCleared")
+                                : entry.content}
                             </span>
                             <div class="h-px flex-1 bg-amber-500/20"></div>
                           </div>
@@ -3889,6 +3950,14 @@
       <PermissionPanel
         pendingTools={pendingToolPermissions}
         onPermissionRespond={handlePermissionRespond}
+      />
+    {/if}
+
+    <!-- MCP Elicitation dialog (above input bar) -->
+    {#if store.hasElicitation && store.sessionAlive}
+      <ElicitationDialog
+        elicitations={store.pendingElicitations}
+        onRespond={handleElicitationRespond}
       />
     {/if}
 

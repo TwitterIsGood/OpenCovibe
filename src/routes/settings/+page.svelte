@@ -1492,11 +1492,11 @@
                         >{t("settings_general_webTunnelLink")}</span
                       >
                       <code
-                        class="flex-1 rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs overflow-hidden text-ellipsis whitespace-nowrap"
+                        class="flex-1 rounded-md border bg-muted/50 px-3 py-1.5 font-mono text-xs overflow-hidden text-ellipsis whitespace-nowrap"
                         >{tunnelUrl.replace(/[?#]token=.*$/, "?token=...")}</code
                       >
                       <button
-                        class="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
+                        class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                         onclick={async () => {
                           await navigator.clipboard.writeText(tunnelUrl);
                           webTunnelLinkCopied = true;
@@ -1509,7 +1509,7 @@
                           : t("settings_general_webCopyLink")}
                       </button>
                       <button
-                        class="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
+                        class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                         onclick={async () => {
                           try {
                             const { open } = await import("@tauri-apps/plugin-shell");
@@ -1526,15 +1526,15 @@
                     <!-- Local link (secondary, muted) -->
                     {#if displayHost && localUrl}
                       <div class="flex items-center gap-2">
-                        <span class="text-xs text-muted-foreground/60 shrink-0"
+                        <span class="text-xs text-muted-foreground shrink-0"
                           >{t("settings_general_webLocalLink")}</span
                         >
                         <code
-                          class="flex-1 rounded-md border border-border/50 bg-muted/30 px-3 py-1.5 font-mono text-[11px] text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap"
+                          class="flex-1 rounded-md border bg-muted/30 px-3 py-1.5 font-mono text-xs text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap"
                           >{localUrl.replace(/#token=.*$/, "#token=...")}</code
                         >
                         <button
-                          class="rounded-md border px-3 py-1.5 text-[11px] text-muted-foreground/60 hover:bg-accent transition-colors shrink-0"
+                          class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                           onclick={async () => {
                             if (localUrl) {
                               await navigator.clipboard.writeText(localUrl);
@@ -1553,11 +1553,11 @@
                   {:else if displayHost}
                     <div class="flex items-center gap-2">
                       <code
-                        class="flex-1 rounded-md border bg-muted/50 px-3 py-2 font-mono text-xs overflow-hidden text-ellipsis whitespace-nowrap"
+                        class="flex-1 rounded-md border bg-muted/50 px-3 py-1.5 font-mono text-xs overflow-hidden text-ellipsis whitespace-nowrap"
                         >{`http://${displayHost}:${webStatus.port}/login#token=...`}</code
                       >
                       <button
-                        class="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
+                        class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                         onclick={copyAccessLink}
                       >
                         {webLinkCopied
@@ -1565,7 +1565,7 @@
                           : t("settings_general_webCopyLink")}
                       </button>
                       <button
-                        class="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
+                        class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                         onclick={openAccessLink}
                       >
                         {t("settings_general_webOpenBrowser")}
@@ -1627,8 +1627,8 @@
                     >
                       {t("settings_general_webRegenerate")}
                     </button>
-                    <span class="text-muted-foreground/50">—</span>
-                    <span class="text-muted-foreground/50"
+                    <span class="text-muted-foreground">—</span>
+                    <span class="text-muted-foreground"
                       >{t("settings_general_webRegenerateDesc")}</span
                     >
                   </div>
@@ -1640,7 +1640,7 @@
                 <p class="text-sm font-medium mb-1.5">{t("settings_general_webTunnel")}</p>
                 <input
                   type="text"
-                  class="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                  class="w-full rounded-md border bg-background px-3 py-1.5 text-sm"
                   placeholder={t("settings_general_webTunnelPlaceholder")}
                   bind:value={webTunnelUrl}
                   onblur={() => {
@@ -1676,7 +1676,7 @@
                   <p class="text-sm font-medium mb-1.5">{t("settings_general_webAccess")}</p>
                   <div class="flex gap-2">
                     <button
-                      class="flex-1 rounded-md border px-3 py-2 text-xs transition-colors {webBindValue ===
+                      class="flex-1 rounded-md border px-3 py-2 text-[13px] transition-colors {webBindValue ===
                       '127.0.0.1'
                         ? 'border-primary bg-primary/10 text-primary'
                         : 'text-muted-foreground hover:bg-accent'}"
@@ -1685,7 +1685,7 @@
                       {t("settings_general_webAccessLocal")}
                     </button>
                     <button
-                      class="flex-1 rounded-md border px-3 py-2 text-xs transition-colors {webBindValue ===
+                      class="flex-1 rounded-md border px-3 py-2 text-[13px] transition-colors {webBindValue ===
                       '0.0.0.0'
                         ? 'border-primary bg-primary/10 text-primary'
                         : 'text-muted-foreground hover:bg-accent'}"
@@ -1702,7 +1702,7 @@
                   <p class="text-sm font-medium mb-1.5">{t("settings_general_webPort")}</p>
                   <input
                     type="number"
-                    class="w-24 rounded-md border bg-background px-3 py-2 text-sm"
+                    class="w-24 rounded-md border bg-background px-3 py-1.5 text-sm"
                     bind:value={webPortInput}
                     min="1024"
                     max="65535"
@@ -1767,7 +1767,7 @@
                     <div class="flex gap-2">
                       <input
                         type="text"
-                        class="flex-1 rounded-md border bg-background px-3 py-2 text-sm"
+                        class="flex-1 rounded-md border bg-background px-3 py-1.5 text-sm"
                         placeholder={t("settings_general_webAllowedOriginsPlaceholder")}
                         bind:value={webOriginInput}
                         onkeydown={(e) => {
@@ -1778,7 +1778,7 @@
                         }}
                       />
                       <button
-                        class="rounded-md border px-3 py-2 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
+                        class="rounded-md border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors shrink-0"
                         onclick={addWebOrigin}
                       >
                         {t("settings_general_webAddOrigin")}

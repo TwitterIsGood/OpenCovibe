@@ -15,6 +15,7 @@ import {
   groupSlashCommands,
   VIRTUAL_COMMANDS,
   QUICK_ACTION_NAMES,
+  CONTEXT_CLEARED_MARKER,
   buildHelpText,
   quoteCliArg,
   normalizeDirPath,
@@ -998,5 +999,30 @@ describe("pathsEqual", () => {
 
   it("different Unix paths are not equal", () => {
     expect(pathsEqual("/path/to/dir", "/path/to/other")).toBe(false);
+  });
+});
+
+// ── /clear virtual command ──
+
+describe("/clear virtual command", () => {
+  it("CONTEXT_CLEARED_MARKER is exported", () => {
+    expect(CONTEXT_CLEARED_MARKER).toBe("__context_cleared__");
+  });
+
+  it("clear is in VIRTUAL_COMMANDS with _action clear-context", () => {
+    const clearCmd = VIRTUAL_COMMANDS.find((c) => c.name === "clear");
+    expect(clearCmd).toBeDefined();
+    expect(clearCmd!["_virtual"]).toBe(true);
+    expect(clearCmd!["_action"]).toBe("clear-context");
+  });
+
+  it("getQuickActions includes clear when merged with empty CLI commands", () => {
+    const merged = mergeWithVirtual([]);
+    const quickActions = getQuickActions(merged);
+    expect(quickActions.map((c) => c.name)).toContain("clear");
+  });
+
+  it("parseVirtualAction recognizes /clear", () => {
+    expect(parseVirtualAction("/clear")).toEqual({ name: "clear", args: "" });
   });
 });

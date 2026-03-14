@@ -1345,6 +1345,20 @@ describe("SessionStore reducer", () => {
       expect(classifyError().category).toBe("unknown");
       expect(classifyError("", "").category).toBe("unknown");
     });
+
+    it("classifies frontend 60s timeout as server_issue, not auth_issue", () => {
+      const c = classifyError(undefined, "No response after 60s — still waiting for API.");
+      expect(c.category).toBe("server_issue");
+      expect(c.canRetry).toBe(true);
+      expect(c.settingsLink).toBe("");
+    });
+
+    it("still classifies real auth errors by subtype even if msg mentions API", () => {
+      expect(classifyError("error_api_key_invalid", "Invalid API key provided").category).toBe(
+        "auth_issue",
+      );
+      expect(classifyError(undefined, "Received 401 Unauthorized").category).toBe("auth_issue");
+    });
   });
 
   // ── taskNotifications Map ──

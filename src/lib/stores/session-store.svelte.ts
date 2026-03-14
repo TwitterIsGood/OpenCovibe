@@ -312,7 +312,7 @@ export class SessionStore {
         !this.thinkingText
       ) {
         this._isTimeoutError = true;
-        this.error = "No response from API after 60s. Check your API key and network.";
+        this.error = "No response after 60s — still waiting for API.";
         dbgWarn("store", "response timeout: no content after 60s");
       }
     }, SessionStore._RESPONSE_TIMEOUT_MS);

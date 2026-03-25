@@ -84,6 +84,8 @@
   import { truncate, cwdDisplayLabel } from "$lib/utils/format";
   import { uuid } from "$lib/utils/uuid";
   import RewindModal from "$lib/components/RewindModal.svelte";
+  import type { ElementSelection } from "$lib/types";
+  import { isElementSelection } from "$lib/types";
 
   // ── Helpers ──
 
@@ -133,6 +135,12 @@
   let preloadGen = 0;
   /** Local proxy running statuses for AuthSourceBadge. */
   let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
+
+  // ── Preview state ──
+  let previewInstanceId = $state("");
+  let previewOpen = $derived(previewInstanceId !== "");
+  let previewUrlBarOpen = $state(false);
+  let previewUrlInput = $state(localStorage.getItem("ocv:preview-url") ?? "http://localhost:");
 
   // ── Model contamination helpers ──
 
@@ -1358,6 +1366,39 @@
       handleTauriDrop,
     );
 
+    // Preview window event listeners
+    const previewSelectionUnlisten = chatTransport.listen<{
+      instanceId: string;
+      data: unknown;
+    }>("preview-element-selected", (payload) => {
+      if (payload.instanceId !== previewInstanceId) {
+        dbgWarn("preview", "ignoring selection from stale instance", payload.instanceId);
+        return;
+      }
+      if (!isElementSelection(payload.data)) {
+        dbgWarn("preview", "invalid element payload", payload.data);
+        return;
+      }
+      dbg("preview", "elementSelected", {
+        domPath: payload.data.domPath,
+        tagName: payload.data.tagName,
+      });
+      // Insert directly to chat and bring main window to front
+      promptRef?.appendText(formatElementContext(payload.data));
+      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().setFocus();
+      });
+    });
+
+    const previewClosedUnlisten = chatTransport.listen<{ instanceId: string }>(
+      "preview-window-closed",
+      (payload) => {
+        if (payload.instanceId !== previewInstanceId) return;
+        dbg("preview", "windowClosed", { instanceId: payload.instanceId });
+        resetPreviewState();
+      },
+    );
+
     return () => {
       window.removeEventListener("ocv:statusbar-toggle", onStatusBarToggle);
       keybindingStore.unregisterCallback("chat:interrupt");
@@ -1374,6 +1415,8 @@
       dragEnterUnlisten.then((fn) => fn());
       dragLeaveUnlisten.then((fn) => fn());
       dragDropUnlisten.then((fn) => fn());
+      previewSelectionUnlisten.then((fn) => fn());
+      previewClosedUnlisten.then((fn) => fn());
       // Clean up verbose retry timer
       if (verboseRetryTimer) clearTimeout(verboseRetryTimer);
       // Clean up progressive rendering timer
@@ -2126,6 +2169,72 @@
     }
   }
 
+  // ── Preview helpers ──
+
+  function isLocalhostUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return (
+        ["localhost", "127.0.0.1", "0.0.0.0", "[::1]"].includes(u.hostname) &&
+        ["http:", "https:"].includes(u.protocol)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async function openPreview(url: string): Promise<"ok" | "invalid_url" | "open_failed"> {
+    dbg("preview", "openPreview", { url });
+    if (!isLocalhostUrl(url)) return "invalid_url";
+
+    const instanceId = crypto.randomUUID();
+    resetPreviewState();
+    previewInstanceId = instanceId;
+
+    try {
+      await api.openPreviewWindow(url, instanceId);
+      localStorage.setItem("ocv:preview-url", url);
+      return "ok";
+    } catch (e) {
+      dbgWarn("preview", "openPreview failed", e);
+      resetPreviewState();
+      const msg = String(e);
+      if (msg.startsWith("preview_invalid_url:")) return "invalid_url";
+      return "open_failed";
+    }
+  }
+
+  async function closePreview() {
+    dbg("preview", "closePreview");
+    resetPreviewState();
+    await api.closePreviewWindow();
+  }
+
+  function resetPreviewState() {
+    previewInstanceId = "";
+  }
+
+  function formatElementContext(sel: ElementSelection): string {
+    const lines = [
+      `[Page Element]`,
+      `URL: ${sel.url}`,
+      `Path: ${sel.domPath}`,
+      `Tag: ${sel.tagName}`,
+    ];
+    if (sel.textContent) lines.push(`Text: "${sel.textContent.slice(0, 200)}"`);
+    const attrs = Object.entries(sel.attributes)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(", ");
+    if (attrs) lines.push(`Attributes: ${attrs}`);
+    const styles = Object.entries(sel.styleSummary)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(", ");
+    if (styles) lines.push(`Styles: ${styles}`);
+    lines.push(`HTML: ${sel.outerHtmlSnippet.slice(0, 500)}`);
+    return lines.join("\n");
+  }
+
   async function handleVirtualCommand(action: string, args: string) {
     dbg("chat", "virtualCommand", { action, args });
     if (action === "copy-last") {
@@ -2548,6 +2657,27 @@
         appendCommandOutput(
           `Failed to cancel loop: ${err instanceof Error ? err.message : String(err)}`,
         );
+      }
+    } else if (action === "toggle-preview") {
+      const doOpen = async (url: string) => {
+        const result = await openPreview(url);
+        if (result === "ok") appendCommandOutput(t("preview_opened"));
+        else if (result === "invalid_url") appendCommandOutput(t("preview_invalidUrl"));
+        else appendCommandOutput(t("preview_openFailed"));
+      };
+
+      if (args) {
+        await doOpen(args);
+      } else if (previewOpen) {
+        await closePreview();
+        appendCommandOutput(t("preview_closed"));
+      } else {
+        const lastUrl = localStorage.getItem("ocv:preview-url");
+        if (lastUrl) {
+          await doOpen(lastUrl);
+        } else {
+          appendCommandOutput(t("preview_usage"));
+        }
       }
     }
   }
@@ -3426,6 +3556,21 @@
       authSourceLabel={store.authSourceLabel}
       authSourceCategory={store.authSourceCategory}
       apiKeySource={store.apiKeySource}
+      {previewOpen}
+      onPreviewToggle={() => {
+        if (previewOpen && !previewUrlBarOpen) {
+          closePreview();
+        } else {
+          previewUrlBarOpen = !previewUrlBarOpen;
+          if (previewUrlBarOpen) {
+            requestAnimationFrame(() => {
+              const el = document.querySelector<HTMLInputElement>("#__preview-url-input");
+              el?.focus();
+              el?.select();
+            });
+          }
+        }
+      }}
       onStatusClick={() => {
         if (!hasSidebarData) return;
         if (sidebarCollapsed) sidebarCollapsed = false;
@@ -3445,6 +3590,72 @@
             store.mcpServers = servers;
           }}
         />
+      </div>
+    {/if}
+
+    <!-- Preview URL input bar -->
+    {#if previewUrlBarOpen}
+      <div class="flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted/30 text-xs">
+        <svg
+          class="w-3.5 h-3.5 shrink-0 text-muted-foreground"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <circle cx="12" cy="12" r="10" /><path
+            d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+          />
+        </svg>
+        <input
+          id="__preview-url-input"
+          type="text"
+          bind:value={previewUrlInput}
+          placeholder="http://localhost:3000"
+          class="flex-1 bg-transparent border-none outline-none text-xs text-foreground placeholder:text-muted-foreground/50 font-mono"
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              const url = previewUrlInput.trim();
+              if (url) {
+                openPreview(url).then((r) => {
+                  if (r === "ok") {
+                    previewUrlBarOpen = false;
+                    appendCommandOutput(t("preview_opened"));
+                  } else if (r === "invalid_url") appendCommandOutput(t("preview_invalidUrl"));
+                  else appendCommandOutput(t("preview_openFailed"));
+                });
+              }
+            } else if (e.key === "Escape") {
+              previewUrlBarOpen = false;
+            }
+          }}
+        />
+        {#if previewOpen}
+          <button
+            onclick={() => {
+              closePreview();
+              previewUrlBarOpen = false;
+            }}
+            class="px-2 py-0.5 rounded text-xs bg-muted hover:bg-accent text-foreground transition-colors"
+          >
+            {t("preview_close")}
+          </button>
+        {/if}
+        <button
+          onclick={() => {
+            previewUrlBarOpen = false;
+          }}
+          class="text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <svg
+            class="w-3.5 h-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg
+          >
+        </button>
       </div>
     {/if}
 

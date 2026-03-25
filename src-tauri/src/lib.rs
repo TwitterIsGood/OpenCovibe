@@ -276,6 +276,9 @@ pub fn run() {
             commands::web_server::regenerate_web_server_token,
             commands::web_server::restart_web_server,
             commands::web_server::get_local_ip,
+            commands::preview::open_preview_window,
+            commands::preview::close_preview_window,
+            commands::preview::set_preview_pick_mode,
         ])
         .setup(move |app| {
             // Set up broadcast emitter (requires AppHandle, so must be in setup)
@@ -338,6 +341,10 @@ pub fn run() {
         .on_window_event(move |window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // Only intercept close for the main window
+                    if window.label() != "main" {
+                        return;
+                    }
                     api.prevent_close(); // always prevent default close
                     if tray_ok_for_event.load(Ordering::Relaxed) {
                         // Hide to tray instead of quitting
@@ -362,8 +369,11 @@ pub fn run() {
                     }
                 }
                 tauri::WindowEvent::Destroyed => {
-                    // Safety fallback: cancel actors if window is truly destroyed (e.g. app.exit())
-                    cancel_for_exit.cancel();
+                    // Safety fallback: cancel actors if main window is truly destroyed (e.g. app.exit()).
+                    // Skip for secondary windows (e.g. preview) — destroying them must not shut down the app.
+                    if window.label() == "main" {
+                        cancel_for_exit.cancel();
+                    }
                 }
                 _ => {}
             }

@@ -1699,6 +1699,14 @@
     });
   }
 
+  export function appendText(text: string) {
+    inputText = inputText ? inputText + "\n" + text : text;
+    requestAnimationFrame(() => {
+      autoResize();
+      textareaEl?.focus();
+    });
+  }
+
   export function triggerSend() {
     handleSend();
   }

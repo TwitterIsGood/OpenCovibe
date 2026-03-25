@@ -376,31 +376,36 @@ pub async fn dispatch_command(
         "install_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
-            let result = crate::commands::plugins::install_plugin(name, scope).await?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::install_plugin(name, scope, cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "uninstall_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
-            let result = crate::commands::plugins::uninstall_plugin(name, scope).await?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::uninstall_plugin(name, scope, cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "enable_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
-            let result = crate::commands::plugins::enable_plugin(name, scope).await?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::enable_plugin(name, scope, cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "disable_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
-            let result = crate::commands::plugins::disable_plugin(name, scope).await?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::disable_plugin(name, scope, cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "update_plugin" => {
             let name = extract_str(&params, "name")?;
             let scope = extract_str(&params, "scope")?;
-            let result = crate::commands::plugins::update_plugin(name, scope).await?;
+            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let result = crate::commands::plugins::update_plugin(name, scope, cwd).await?;
             serde_json::to_value(result).map_err(|e| e.to_string())
         }
         "add_marketplace" => {

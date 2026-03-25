@@ -417,23 +417,31 @@ pub struct PluginCommandResult {
 /// Run a `claude plugin ...` CLI command and capture output.
 ///
 /// `args` is the argument list after `plugin` — e.g., `["install", "frontend-design", "--scope", "user"]`.
+/// `cwd` sets the working directory for the command (required for `--scope project`/`local`).
 ///
 /// Returns `PluginCommandResult` with stdout, stderr, exit_code, and success flag.
 /// Returns `Err(String)` only for spawn failures or timeouts (not CLI errors — those are in stderr).
-pub async fn run_plugin_command(args: &[&str]) -> Result<PluginCommandResult, String> {
+pub async fn run_plugin_command(
+    args: &[&str],
+    cwd: Option<&str>,
+) -> Result<PluginCommandResult, String> {
     let claude_bin = resolve_claude_path();
     let path_env = augmented_path();
 
     log::debug!(
-        "[plugins] run_plugin_command: {} plugin {}",
+        "[plugins] run_plugin_command: {} plugin {} (cwd={:?})",
         claude_bin,
-        args.join(" ")
+        args.join(" "),
+        cwd
     );
 
     let mut cmd = Command::new(&claude_bin);
     cmd.arg("plugin");
     for arg in args {
         cmd.arg(arg);
+    }
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
     }
     cmd.env("PATH", &path_env)
         .env_remove("CLAUDECODE") // Allow running inside a Claude Code session
@@ -724,7 +732,7 @@ pub fn validate_scope(scope: &str) -> Result<(), String> {
 
 /// List installed plugins via CLI.
 pub async fn list_installed_plugins_cli() -> Result<Vec<crate::models::InstalledPlugin>, String> {
-    let result = run_plugin_command(&["list", "--json"]).await?;
+    let result = run_plugin_command(&["list", "--json"], None).await?;
     if !result.success {
         return Err(format!("CLI error: {}", result.stderr.trim()));
     }

@@ -54,6 +54,8 @@
     apiKeySource,
     effort,
     onEffortChange,
+    onPreviewToggle,
+    previewOpen = false,
     onStatusClick,
   }: {
     run?: TaskRun | null;
@@ -101,6 +103,8 @@
     apiKeySource?: string;
     effort?: string;
     onEffortChange?: (effort: string) => void;
+    onPreviewToggle?: () => void;
+    previewOpen?: boolean;
     onStatusClick?: () => void;
   } = $props();
 
@@ -546,6 +550,28 @@
 
     <!-- Right: actions + chevron -->
     <div class="flex items-center gap-2">
+      {#if onPreviewToggle}
+        <button
+          class="flex items-center gap-1 rounded px-2 py-0.5 transition-colors
+            {previewOpen
+            ? 'text-primary hover:bg-primary/10'
+            : 'text-foreground/50 hover:text-foreground hover:bg-accent'}"
+          onclick={onPreviewToggle}
+          title="Preview"
+        >
+          <svg
+            class="h-3 w-3"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg
+          >
+          Preview
+        </button>
+      {/if}
       {#if !running && onRewind && persistedFiles && persistedFiles.length > 0}
         <button
           class="flex items-center gap-1 rounded px-2 py-0.5 text-foreground/50 hover:text-foreground hover:bg-accent transition-colors"

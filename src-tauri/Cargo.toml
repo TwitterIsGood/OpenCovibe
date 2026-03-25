@@ -44,6 +44,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 include_dir = "0.7"
 rand = "0.8"
 if-addrs = "0.15.0"
+urlencoding = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

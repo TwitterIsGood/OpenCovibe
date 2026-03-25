@@ -218,6 +218,14 @@ export const VIRTUAL_COMMANDS: CliCommand[] = [
     _navigate: "/settings?tab=shortcuts",
   },
   {
+    name: "preview",
+    description: "Open localhost preview for element picking",
+    aliases: [],
+    _virtual: true,
+    _action: "toggle-preview",
+    argumentHint: "[url]",
+  },
+  {
     name: "ralph",
     description: "Start a Ralph loop (auto-iterate same prompt until done)",
     aliases: ["ralph-loop"],
@@ -477,6 +485,7 @@ const COMMAND_CATEGORY_MAP: Record<string, SlashCategory> = {
   run: "coding",
   terminal: "coding",
   todos: "coding",
+  preview: "coding",
   tasks: "coding",
   // Config
   config: "config",

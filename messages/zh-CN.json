@@ -1442,5 +1442,17 @@
   "elicitation_pending": "{count} 项待处理",
   "elicitation_open_url": "打开认证链接",
   "elicitation_accept": "提交",
-  "elicitation_decline": "拒绝"
+  "elicitation_decline": "拒绝",
+
+  "preview_label": "预览",
+  "preview_opened": "预览窗口已打开",
+  "preview_closed": "预览窗口已关闭",
+  "preview_pick": "选取",
+  "preview_picking": "选取中...",
+  "preview_close": "关闭",
+  "preview_insertToChat": "插入到对话",
+  "preview_dismiss": "取消",
+  "preview_invalidUrl": "仅支持 localhost 地址",
+  "preview_openFailed": "预览窗口打开失败",
+  "preview_usage": "用法：/preview http://localhost:3000"
 }

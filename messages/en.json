@@ -1442,5 +1442,17 @@
   "elicitation_pending": "{count} pending",
   "elicitation_open_url": "Open authentication URL",
   "elicitation_accept": "Submit",
-  "elicitation_decline": "Decline"
+  "elicitation_decline": "Decline",
+
+  "preview_label": "Preview",
+  "preview_opened": "Preview window opened",
+  "preview_closed": "Preview window closed",
+  "preview_pick": "Pick",
+  "preview_picking": "Picking...",
+  "preview_close": "Close",
+  "preview_insertToChat": "Insert to Chat",
+  "preview_dismiss": "Dismiss",
+  "preview_invalidUrl": "Only localhost URLs are supported",
+  "preview_openFailed": "Failed to open preview window",
+  "preview_usage": "Usage: /preview http://localhost:3000"
 }

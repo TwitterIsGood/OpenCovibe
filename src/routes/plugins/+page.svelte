@@ -529,11 +529,19 @@
 
   // ── Plugin operation handlers ──
 
+  function needsCwd(scope: string): boolean {
+    return scope === "project" || scope === "local";
+  }
+
   async function handleInstall(pluginName: string) {
     operationLoading = pluginName;
     dbg("plugins", "install", { name: pluginName, scope: installScope });
     try {
-      const result = await installPlugin(pluginName, installScope);
+      const result = await installPlugin(
+        pluginName,
+        installScope,
+        needsCwd(installScope) ? projectCwd : undefined,
+      );
       dbg("plugins", "install result", result);
       showToast(
         result.success
@@ -557,7 +565,11 @@
         operationLoading = pluginName;
         dbg("plugins", "uninstall", { name: pluginName, scope });
         try {
-          const result = await uninstallPlugin(pluginName, scope);
+          const result = await uninstallPlugin(
+            pluginName,
+            scope,
+            needsCwd(scope) ? projectCwd : undefined,
+          );
           dbg("plugins", "uninstall result", result);
           showToast(
             result.success
@@ -582,7 +594,7 @@
     dbg("plugins", action, { name: plugin.name, scope });
     try {
       const fn = plugin.enabled !== false ? disablePlugin : enablePlugin;
-      const result = await fn(plugin.name, scope);
+      const result = await fn(plugin.name, scope, needsCwd(scope) ? projectCwd : undefined);
       dbg("plugins", `${action} result`, result);
       showToast(
         result.success
@@ -604,7 +616,11 @@
     operationLoading = pluginName;
     dbg("plugins", "update", { name: pluginName, scope });
     try {
-      const result = await updatePlugin(pluginName, scope);
+      const result = await updatePlugin(
+        pluginName,
+        scope,
+        needsCwd(scope) ? projectCwd : undefined,
+      );
       dbg("plugins", "update result", result);
       showToast(
         result.success
@@ -1488,14 +1504,20 @@
               class="rounded px-2 py-1 text-xs font-medium transition-colors {installScope ===
               'project'
                 ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'}"
+                : 'text-muted-foreground hover:text-foreground'} {!projectCwd
+                ? 'opacity-40 cursor-not-allowed'
+                : ''}"
+              disabled={!projectCwd}
               onclick={() => (installScope = "project")}>{t("plugin_scopeProject")}</button
             >
             <button
               class="rounded px-2 py-1 text-xs font-medium transition-colors {installScope ===
               'local'
                 ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'}"
+                : 'text-muted-foreground hover:text-foreground'} {!projectCwd
+                ? 'opacity-40 cursor-not-allowed'
+                : ''}"
+              disabled={!projectCwd}
               onclick={() => (installScope = "local")}>{t("plugin_scopeLocal")}</button
             >
           </div>

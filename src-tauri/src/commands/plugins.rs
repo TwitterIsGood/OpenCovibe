@@ -3,6 +3,28 @@ use crate::models::{
     MarketplacePlugin, PluginOperationResult, ProviderHealth, StandaloneSkill,
 };
 
+/// Validate and resolve cwd for plugin commands.
+/// Returns `Some(cwd)` when scope is project/local (cwd required),
+/// `None` for user/managed scope (cwd not needed).
+fn validate_plugin_cwd<'a>(scope: &str, cwd: Option<&'a str>) -> Result<Option<&'a str>, String> {
+    if scope == "project" || scope == "local" {
+        match cwd {
+            Some(dir) if !dir.is_empty() => {
+                if !std::path::Path::new(dir).is_dir() {
+                    return Err(format!("Working directory does not exist: {}", dir));
+                }
+                Ok(Some(dir))
+            }
+            _ => Err(format!(
+                "Scope '{}' requires a working directory (cwd)",
+                scope
+            )),
+        }
+    } else {
+        Ok(None)
+    }
+}
+
 #[tauri::command]
 pub fn list_marketplaces() -> Result<Vec<MarketplaceInfo>, String> {
     log::debug!("[plugins] list_marketplaces");
@@ -77,13 +99,26 @@ pub async fn list_installed_plugins() -> Result<Vec<InstalledPlugin>, String> {
 }
 
 #[tauri::command]
-pub async fn install_plugin(name: String, scope: String) -> Result<PluginOperationResult, String> {
-    log::debug!("[plugins] install_plugin: name={}, scope={}", name, scope);
+pub async fn install_plugin(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[plugins] install_plugin: name={}, scope={}, cwd={:?}",
+        name,
+        scope,
+        cwd
+    );
     crate::storage::plugins::validate_plugin_name(&name)?;
     crate::storage::plugins::validate_scope(&scope)?;
+    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
 
-    let result =
-        crate::storage::plugins::run_plugin_command(&["install", &name, "--scope", &scope]).await?;
+    let result = crate::storage::plugins::run_plugin_command(
+        &["install", &name, "--scope", &scope],
+        effective_cwd,
+    )
+    .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -99,14 +134,23 @@ pub async fn install_plugin(name: String, scope: String) -> Result<PluginOperati
 pub async fn uninstall_plugin(
     name: String,
     scope: String,
+    cwd: Option<String>,
 ) -> Result<PluginOperationResult, String> {
-    log::debug!("[plugins] uninstall_plugin: name={}, scope={}", name, scope);
+    log::debug!(
+        "[plugins] uninstall_plugin: name={}, scope={}, cwd={:?}",
+        name,
+        scope,
+        cwd
+    );
     crate::storage::plugins::validate_plugin_name(&name)?;
     crate::storage::plugins::validate_scope(&scope)?;
+    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
 
-    let result =
-        crate::storage::plugins::run_plugin_command(&["uninstall", &name, "--scope", &scope])
-            .await?;
+    let result = crate::storage::plugins::run_plugin_command(
+        &["uninstall", &name, "--scope", &scope],
+        effective_cwd,
+    )
+    .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -119,13 +163,26 @@ pub async fn uninstall_plugin(
 }
 
 #[tauri::command]
-pub async fn enable_plugin(name: String, scope: String) -> Result<PluginOperationResult, String> {
-    log::debug!("[plugins] enable_plugin: name={}, scope={}", name, scope);
+pub async fn enable_plugin(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[plugins] enable_plugin: name={}, scope={}, cwd={:?}",
+        name,
+        scope,
+        cwd
+    );
     crate::storage::plugins::validate_plugin_name(&name)?;
     crate::storage::plugins::validate_scope(&scope)?;
+    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
 
-    let result =
-        crate::storage::plugins::run_plugin_command(&["enable", &name, "--scope", &scope]).await?;
+    let result = crate::storage::plugins::run_plugin_command(
+        &["enable", &name, "--scope", &scope],
+        effective_cwd,
+    )
+    .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -138,13 +195,26 @@ pub async fn enable_plugin(name: String, scope: String) -> Result<PluginOperatio
 }
 
 #[tauri::command]
-pub async fn disable_plugin(name: String, scope: String) -> Result<PluginOperationResult, String> {
-    log::debug!("[plugins] disable_plugin: name={}, scope={}", name, scope);
+pub async fn disable_plugin(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[plugins] disable_plugin: name={}, scope={}, cwd={:?}",
+        name,
+        scope,
+        cwd
+    );
     crate::storage::plugins::validate_plugin_name(&name)?;
     crate::storage::plugins::validate_scope(&scope)?;
+    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
 
-    let result =
-        crate::storage::plugins::run_plugin_command(&["disable", &name, "--scope", &scope]).await?;
+    let result = crate::storage::plugins::run_plugin_command(
+        &["disable", &name, "--scope", &scope],
+        effective_cwd,
+    )
+    .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -157,13 +227,26 @@ pub async fn disable_plugin(name: String, scope: String) -> Result<PluginOperati
 }
 
 #[tauri::command]
-pub async fn update_plugin(name: String, scope: String) -> Result<PluginOperationResult, String> {
-    log::debug!("[plugins] update_plugin: name={}, scope={}", name, scope);
+pub async fn update_plugin(
+    name: String,
+    scope: String,
+    cwd: Option<String>,
+) -> Result<PluginOperationResult, String> {
+    log::debug!(
+        "[plugins] update_plugin: name={}, scope={}, cwd={:?}",
+        name,
+        scope,
+        cwd
+    );
     crate::storage::plugins::validate_plugin_name(&name)?;
     crate::storage::plugins::validate_scope(&scope)?;
+    let effective_cwd = validate_plugin_cwd(&scope, cwd.as_deref())?;
 
-    let result =
-        crate::storage::plugins::run_plugin_command(&["update", &name, "--scope", &scope]).await?;
+    let result = crate::storage::plugins::run_plugin_command(
+        &["update", &name, "--scope", &scope],
+        effective_cwd,
+    )
+    .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -181,7 +264,7 @@ pub async fn add_marketplace(source: String) -> Result<PluginOperationResult, St
     crate::storage::plugins::validate_marketplace_source(&source)?;
 
     let result =
-        crate::storage::plugins::run_plugin_command(&["marketplace", "add", &source]).await?;
+        crate::storage::plugins::run_plugin_command(&["marketplace", "add", &source], None).await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -199,7 +282,8 @@ pub async fn remove_marketplace(name: String) -> Result<PluginOperationResult, S
     crate::storage::plugins::validate_plugin_name(&name)?;
 
     let result =
-        crate::storage::plugins::run_plugin_command(&["marketplace", "remove", &name]).await?;
+        crate::storage::plugins::run_plugin_command(&["marketplace", "remove", &name], None)
+            .await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -223,7 +307,7 @@ pub async fn update_marketplace(name: Option<String>) -> Result<PluginOperationR
         None => vec!["marketplace", "update"],
     };
 
-    let result = crate::storage::plugins::run_plugin_command(&args).await?;
+    let result = crate::storage::plugins::run_plugin_command(&args, None).await?;
 
     Ok(PluginOperationResult {
         success: result.success,
@@ -283,4 +367,46 @@ pub async fn install_community_skill(
     crate::storage::community_skills::validate_skill_id(&skill_id)?;
     crate::storage::community_skills::install_skill(&source, &skill_id, &scope, cwd.as_deref())
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_plugin_cwd_requires_cwd_for_project_scope() {
+        let result = validate_plugin_cwd("project", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a working directory"));
+    }
+
+    #[test]
+    fn validate_plugin_cwd_requires_cwd_for_local_scope() {
+        let result = validate_plugin_cwd("local", Some(""));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a working directory"));
+    }
+
+    #[test]
+    fn validate_plugin_cwd_rejects_nonexistent_dir() {
+        let result = validate_plugin_cwd("project", Some("/nonexistent_dir_12345"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    fn validate_plugin_cwd_user_scope_ignores_cwd() {
+        let result = validate_plugin_cwd("user", None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn validate_plugin_cwd_project_with_valid_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let result = validate_plugin_cwd("project", Some(dir));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(dir));
+    }
 }

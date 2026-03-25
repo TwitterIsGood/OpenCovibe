@@ -10,8 +10,8 @@ use crate::agent::adapter::ActorSessionMap;
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::agent::notify::notify_if_background;
 use crate::agent::turn_engine::{
-    ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin, TurnPhase,
-    UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
+    apply_activity_reset, ActiveTurn, ContextExtractor, InternalExtractor, InternalJob, TurnOrigin,
+    TurnPhase, UserTurnKind, UserTurnTicket, INTERNAL_HARD_TIMEOUT, INTERNAL_SOFT_TIMEOUT,
     QUARANTINE_DEADLINE, TICK_INTERVAL, USER_HARD_TIMEOUT, USER_SOFT_TIMEOUT,
 };
 use crate::models::{
@@ -1023,7 +1023,7 @@ impl SessionActor {
                             wait_secs, req.subtype, req.detail
                         )
                     } else {
-                        "Session timeout — no response from CLI for 10 minutes. Process killed."
+                        "Session timeout — no output from CLI for 30 minutes. Process killed."
                             .to_string()
                     };
                     self.emit_state("failed", None, Some(error_msg), true);
@@ -1432,6 +1432,14 @@ impl SessionActor {
                 return;
             }
         };
+
+        // Activity-based deadline reset for user/ralph turns.
+        if apply_activity_reset(self.quarantine_until_result, &mut self.active_turn) {
+            log::trace!(
+                "[turn] activity reset: hard_deadline extended for run_id={}",
+                self.run_id
+            );
+        }
 
         let event_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let is_control = event_type == "control_response"

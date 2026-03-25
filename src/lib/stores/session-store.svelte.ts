@@ -34,6 +34,17 @@ import { updateInstalledVersion, getCliCommands } from "./cli-info.svelte";
 import * as snapshotCache from "$lib/utils/snapshot-cache";
 import { getTransport } from "$lib/transport";
 
+// ── CLI permission mode normalization ──
+// CLI may return different names for the same mode across versions.
+// Normalize to the canonical names used throughout the app.
+const CLI_PERM_MODE_ALIASES: Record<string, string> = {
+  delegate: "acceptEdits", // CLI v2.1.81+ renamed acceptEdits → delegate
+};
+
+function normalizePermissionMode(mode: string): string {
+  return CLI_PERM_MODE_ALIASES[mode] ?? mode;
+}
+
 // ── OpGuard: async operation guard with mounted check ──
 
 class OpGuard {
@@ -2374,16 +2385,20 @@ export class SessionStore {
             }
           }
         }
-        if (ev.permissionMode && !this.permissionModeSetByUser) {
-          this.permissionMode = ev.permissionMode;
-        } else if (ev.permissionMode && this.permissionModeSetByUser) {
+        // eslint-disable-next-line no-case-declarations -- scoped to session_init block
+        const normalizedPermMode = ev.permissionMode
+          ? normalizePermissionMode(ev.permissionMode)
+          : undefined;
+        if (normalizedPermMode && !this.permissionModeSetByUser) {
+          this.permissionMode = normalizedPermMode;
+        } else if (normalizedPermMode && this.permissionModeSetByUser) {
           dbg("store", "session_init permissionMode skipped — user already set", {
-            cliValue: ev.permissionMode,
+            cliValue: normalizedPermMode,
             userValue: this.permissionMode,
           });
           // CLI may have reset permission mode after compaction — re-send to resync.
           // Only in live mode (not batch replay) and when the run has a valid id.
-          if (!ctx && this.run?.id && ev.permissionMode !== this.permissionMode) {
+          if (!ctx && this.run?.id && normalizedPermMode !== this.permissionMode) {
             dbg("store", "resync permissionMode to CLI after compaction", {
               mode: this.permissionMode,
             });

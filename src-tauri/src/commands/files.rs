@@ -1,6 +1,24 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// Canonicalize a path for `starts_with` comparison. If the path doesn't exist,
+/// canonicalize the parent and re-append the final component. Falls back to
+/// the path as-is if neither exist. Sufficient for `~/.opencovibe` / `~/.claude`
+/// where the parent (`$HOME`) always exists.
+fn canonicalize_for_prefix(path: &std::path::Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c;
+    }
+    if let Some(parent) = path.parent() {
+        if let Ok(cp) = std::fs::canonicalize(parent) {
+            if let Some(name) = path.file_name() {
+                return cp.join(name);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Validate that a file path is within allowed directories.
 ///
 /// Allowed directories:
@@ -75,8 +93,13 @@ pub(crate) fn validate_file_path(
     let home = crate::storage::home_dir().unwrap_or_default();
     let claude_dir = PathBuf::from(&home).join(".claude");
 
+    // Canonicalize allowed directories for reliable comparison on Windows
+    // (fs::canonicalize normalizes case; raw paths from home_dir() may differ)
+    let data_dir_c = canonicalize_for_prefix(&data_dir);
+    let claude_dir_c = canonicalize_for_prefix(&claude_dir);
+
     // Allow: ~/.opencovibe/*, ~/.claude/*
-    if canonical.starts_with(&data_dir) || canonical.starts_with(&claude_dir) {
+    if canonical.starts_with(&data_dir_c) || canonical.starts_with(&claude_dir_c) {
         log::debug!("[files] path allowed (config dir): {}", canonical.display());
         return Ok(canonical);
     }
@@ -523,6 +546,27 @@ mod tests {
         }
         let files = scan_memory_md_files(&mem, &mem, 3, 5);
         assert_eq!(files.len(), 5);
+    }
+
+    #[test]
+    fn canonicalize_for_prefix_reconstructs_via_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("nonexistent_child");
+        assert!(!nonexistent.exists());
+
+        let result = canonicalize_for_prefix(&nonexistent);
+
+        // Parent (tmp dir) should be canonicalized, with "nonexistent_child" appended
+        let expected_parent = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(result, expected_parent.join("nonexistent_child"));
+    }
+
+    #[test]
+    fn canonicalize_for_prefix_returns_canonical_when_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = canonicalize_for_prefix(tmp.path());
+        let expected = std::fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(result, expected);
     }
 
     #[cfg(unix)]

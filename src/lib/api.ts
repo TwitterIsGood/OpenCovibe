@@ -765,29 +765,49 @@ export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
   return invoke<InstalledPlugin[]>("list_installed_plugins");
 }
 
-export async function installPlugin(name: string, scope: string): Promise<PluginOperationResult> {
-  dbg("api", "installPlugin", { name, scope });
-  return invoke<PluginOperationResult>("install_plugin", { name, scope });
+export async function installPlugin(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "installPlugin", { name, scope, cwd });
+  return invoke<PluginOperationResult>("install_plugin", { name, scope, cwd });
 }
 
-export async function uninstallPlugin(name: string, scope: string): Promise<PluginOperationResult> {
-  dbg("api", "uninstallPlugin", { name, scope });
-  return invoke<PluginOperationResult>("uninstall_plugin", { name, scope });
+export async function uninstallPlugin(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "uninstallPlugin", { name, scope, cwd });
+  return invoke<PluginOperationResult>("uninstall_plugin", { name, scope, cwd });
 }
 
-export async function enablePlugin(name: string, scope: string): Promise<PluginOperationResult> {
-  dbg("api", "enablePlugin", { name, scope });
-  return invoke<PluginOperationResult>("enable_plugin", { name, scope });
+export async function enablePlugin(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "enablePlugin", { name, scope, cwd });
+  return invoke<PluginOperationResult>("enable_plugin", { name, scope, cwd });
 }
 
-export async function disablePlugin(name: string, scope: string): Promise<PluginOperationResult> {
-  dbg("api", "disablePlugin", { name, scope });
-  return invoke<PluginOperationResult>("disable_plugin", { name, scope });
+export async function disablePlugin(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "disablePlugin", { name, scope, cwd });
+  return invoke<PluginOperationResult>("disable_plugin", { name, scope, cwd });
 }
 
-export async function updatePlugin(name: string, scope: string): Promise<PluginOperationResult> {
-  dbg("api", "updatePlugin", { name, scope });
-  return invoke<PluginOperationResult>("update_plugin", { name, scope });
+export async function updatePlugin(
+  name: string,
+  scope: string,
+  cwd?: string,
+): Promise<PluginOperationResult> {
+  dbg("api", "updatePlugin", { name, scope, cwd });
+  return invoke<PluginOperationResult>("update_plugin", { name, scope, cwd });
 }
 
 export async function addMarketplace(source: string): Promise<PluginOperationResult> {
@@ -1128,6 +1148,23 @@ export async function deleteAgentFile(
     fileName,
     cwd: cwd ?? null,
   });
+}
+
+// ── Preview ──
+
+export async function openPreviewWindow(url: string, instanceId: string): Promise<void> {
+  dbg("api", "openPreviewWindow", { url, instanceId });
+  return invoke("open_preview_window", { url, instanceId });
+}
+
+export async function closePreviewWindow(): Promise<void> {
+  dbg("api", "closePreviewWindow");
+  return invoke("close_preview_window");
+}
+
+export async function setPreviewPickMode(active: boolean): Promise<void> {
+  dbg("api", "setPreviewPickMode", { active });
+  return invoke("set_preview_pick_mode", { active });
 }
 
 // ── Ralph Loop ──

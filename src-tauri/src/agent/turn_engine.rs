@@ -142,7 +142,7 @@ pub fn should_trigger_auto_context(auto_ctx_id: u32, last: Option<u32>) -> bool 
 
 /// User turns get generous timeouts (CLI can take a long time)
 pub const USER_SOFT_TIMEOUT: Duration = Duration::from_secs(300);
-pub const USER_HARD_TIMEOUT: Duration = Duration::from_secs(600);
+pub const USER_HARD_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// Internal turns (auto-context) timeouts
 pub const INTERNAL_SOFT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -153,6 +153,30 @@ pub const QUARANTINE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Tick interval for the independent timeout clock
 pub const TICK_INTERVAL: Duration = Duration::from_millis(250);
+
+// ── Activity-based deadline reset ──
+
+/// Activity-based deadline reset on CLI stdout. Called from handle_stdout_line.
+///
+/// Rules:
+/// - quarantine → skip (turn is already None; quarantine has its own 10s deadline)
+/// - internal turn → skip (Draining phase depends on fixed deadline)
+/// - user/ralph turn → extend hard_deadline to now + USER_HARD_TIMEOUT
+///
+/// Returns true if hard_deadline was extended.
+pub fn apply_activity_reset(quarantine: bool, active_turn: &mut Option<ActiveTurn>) -> bool {
+    if quarantine {
+        return false;
+    }
+    let Some(turn) = active_turn.as_mut() else {
+        return false;
+    };
+    if matches!(turn.origin, TurnOrigin::Internal(_)) {
+        return false;
+    }
+    turn.hard_deadline = Instant::now() + USER_HARD_TIMEOUT;
+    true
+}
 
 // ── Unit tests ──
 
@@ -173,5 +197,64 @@ mod tests {
     #[test]
     fn auto_ctx_trigger_next() {
         assert!(should_trigger_auto_context(2, Some(1)));
+    }
+
+    // ── Activity reset tests ──
+
+    fn make_turn(origin: TurnOrigin) -> ActiveTurn {
+        let now = Instant::now();
+        ActiveTurn {
+            turn_seq: 1,
+            origin,
+            phase: TurnPhase::Active,
+            started_at: now,
+            soft_deadline: now + USER_SOFT_TIMEOUT,
+            hard_deadline: now + Duration::from_secs(10), // short, so we can assert change
+            turn_index: 0,
+        }
+    }
+
+    #[test]
+    fn activity_reset_user_turn_extends_deadline() {
+        let mut turn = Some(make_turn(TurnOrigin::User(UserTurnKind::Normal {
+            auto_ctx_id: 1,
+        })));
+        let before = turn.as_ref().unwrap().hard_deadline;
+        assert!(apply_activity_reset(false, &mut turn));
+        assert!(turn.as_ref().unwrap().hard_deadline > before);
+    }
+
+    #[test]
+    fn activity_reset_ralph_turn_extends_deadline() {
+        let mut turn = Some(make_turn(TurnOrigin::Ralph));
+        let before = turn.as_ref().unwrap().hard_deadline;
+        assert!(apply_activity_reset(false, &mut turn));
+        assert!(turn.as_ref().unwrap().hard_deadline > before);
+    }
+
+    #[test]
+    fn activity_reset_internal_turn_unchanged() {
+        let mut turn = Some(make_turn(TurnOrigin::Internal(
+            InternalJobKind::AutoContext,
+        )));
+        let before = turn.as_ref().unwrap().hard_deadline;
+        assert!(!apply_activity_reset(false, &mut turn));
+        assert_eq!(turn.as_ref().unwrap().hard_deadline, before);
+    }
+
+    #[test]
+    fn activity_reset_quarantine_skips() {
+        let mut turn = Some(make_turn(TurnOrigin::User(UserTurnKind::Normal {
+            auto_ctx_id: 1,
+        })));
+        let before = turn.as_ref().unwrap().hard_deadline;
+        assert!(!apply_activity_reset(true, &mut turn));
+        assert_eq!(turn.as_ref().unwrap().hard_deadline, before);
+    }
+
+    #[test]
+    fn activity_reset_no_turn_returns_false() {
+        let mut turn: Option<ActiveTurn> = None;
+        assert!(!apply_activity_reset(false, &mut turn));
     }
 }

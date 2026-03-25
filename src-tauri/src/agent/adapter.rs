@@ -42,7 +42,7 @@ fn map_permission_mode(mode: &str) -> String {
         "auto_read" => "acceptEdits".to_string(),
         "auto_all" => "bypassPermissions".to_string(),
         "auto" => "auto".to_string(),
-        "delegate" => "auto".to_string(), // legacy name
+        "delegate" => "acceptEdits".to_string(), // CLI v2.1.81+ alias for acceptEdits
         "dont_ask" => "dontAsk".to_string(),
         other => {
             log::warn!(

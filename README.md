@@ -61,6 +61,8 @@ AI coding CLIs like Claude Code are powerful, but they run inside a terminal. Th
 | **CLI Session Import** | Discover and import existing Claude Code CLI sessions into OpenCovibe |
 | **Rewind** | Checkpoint and selectively revert file changes with dry-run preview |
 | **Remote Hosts** | Configure SSH hosts for remote CLI execution with key generation wizard and connectivity testing |
+| **Preview & Element Picker** | Open a localhost preview in a companion window, interactively pick page elements, and insert structured context (DOM path, styles, HTML snippet) into the chat |
+| **Ralph Loop** | Auto-iterate the same prompt until a completion condition is met — hands-free coding with configurable max iterations |
 | **Doctor Diagnostics** | System health checks for CLI, platform, SSH, and proxy configuration |
 
 ### Features
@@ -69,7 +71,7 @@ AI coding CLIs like Claude Code are powerful, but they run inside a terminal. Th
 - **Session Control** — Create, resume, fork, rename sessions; plan mode toggle; model hot-switch; context history tracking
 - **Drag & Drop** — Native file drag-drop for images, PDFs, directories, and path references
 - **Project Folders** — Sidebar project selector with per-project scoping for memory, permissions, and sessions
-- **Inline Slash Commands** — `/model`, `/diff`, `/todos`, `/tasks`, `/doctor`, `/copy`, `/stats`, and more — rendered natively in-app
+- **Inline Slash Commands** — `/model`, `/diff`, `/todos`, `/tasks`, `/doctor`, `/copy`, `/stats`, `/preview`, `/ralph`, and more — rendered natively in-app
 - **Keyboard Shortcuts** — Fully customizable keybindings with chord support and conflict detection
 - **Hook Manager** — Configure upstream CLI hooks for event-driven automation
 - **i18n** — English and Chinese (Simplified) with lightweight reactive runtime

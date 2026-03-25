@@ -1341,3 +1341,51 @@ export interface AgentDefinitionSummary {
   readonly: boolean;
   raw_content?: string;
 }
+
+// ── Preview / Element Picker ──
+
+export interface ElementSelection {
+  url: string;
+  viewport: { width: number; height: number };
+  domPath: string;
+  tagName: string;
+  textContent: string;
+  attributes: {
+    id: string | null;
+    class: string | null;
+    role: string | null;
+    name: string | null;
+    ariaLabel: string | null;
+  };
+  outerHtmlSnippet: string;
+  styleSummary: Record<string, string>;
+}
+
+/** Runtime guard for ElementSelection payloads from preview bridge. */
+export function isElementSelection(v: unknown): v is ElementSelection {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (
+    typeof o.url !== "string" ||
+    typeof o.domPath !== "string" ||
+    typeof o.tagName !== "string" ||
+    typeof o.textContent !== "string" ||
+    typeof o.outerHtmlSnippet !== "string"
+  )
+    return false;
+  const vp = o.viewport;
+  if (!vp || typeof vp !== "object") return false;
+  const vpc = vp as Record<string, unknown>;
+  if (typeof vpc.width !== "number" || typeof vpc.height !== "number") return false;
+  const attrs = o.attributes;
+  if (!attrs || typeof attrs !== "object") return false;
+  const a = attrs as Record<string, unknown>;
+  for (const key of ["id", "class", "role", "name", "ariaLabel"]) {
+    if (a[key] !== null && typeof a[key] !== "string") return false;
+  }
+  const styles = o.styleSummary;
+  if (!styles || typeof styles !== "object") return false;
+  if (!Object.values(styles as Record<string, unknown>).every((v) => typeof v === "string"))
+    return false;
+  return true;
+}

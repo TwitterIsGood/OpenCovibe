@@ -324,7 +324,6 @@ async fn spawn_server(
             .state::<crate::agent::stream::ProcessMap>()
             .inner()
             .clone(),
-        pty_map: app.state::<crate::agent::pty::PtyMap>().inner().clone(),
         sessions: app
             .state::<crate::agent::adapter::ActorSessionMap>()
             .inner()

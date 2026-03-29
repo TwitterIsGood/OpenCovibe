@@ -27,7 +27,6 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
-portable-pty = "0.8"
 strip-ansi-escapes = "0.2"
 notify = "7"
 reqwest = { version = "0.12", features = ["json", "stream"] }

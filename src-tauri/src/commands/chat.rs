@@ -1,4 +1,3 @@
-use crate::agent::pty::PtyMap;
 use crate::agent::spawn::build_agent_command;
 use crate::agent::stream::{run_agent, ProcessMap};
 use crate::models::{max_attachment_size, Attachment, RunEventType, RunStatus};
@@ -61,7 +60,6 @@ fn extension_for_mime(mime: &str) -> &str {
 pub async fn send_chat_message(
     app: tauri::AppHandle,
     process_map: tauri::State<'_, ProcessMap>,
-    pty_map: tauri::State<'_, PtyMap>,
     run_id: String,
     message: String,
     attachments: Option<Vec<Attachment>>,
@@ -169,29 +167,7 @@ pub async fn send_chat_message(
         log::warn!("[chat] failed to log user event: {}", e);
     }
 
-    // Check if a PTY session already exists for this run (Claude interactive mode)
-    let has_pty = {
-        pty_map
-            .inner()
-            .lock()
-            .map(|m| m.contains_key(&run_id))
-            .unwrap_or(false)
-    };
-
-    if has_pty {
-        // Already have a PTY session — write message to PTY stdin
-        log::debug!(
-            "[chat] writing to existing PTY: run_id={}, input_len={}",
-            run_id,
-            full_prompt.len()
-        );
-        // Use \r (carriage return) not \n — Claude's TUI in raw mode expects Enter as \r
-        let input = format!("{}\r", full_prompt);
-        crate::agent::pty::write_to_pty(pty_map.inner(), &run_id, input.as_bytes())?;
-        return Ok(());
-    }
-
-    // No PTY session — use pipe mode (Codex, or legacy Claude --print)
+    // Pipe mode (Codex)
     log::debug!(
         "[chat] spawning pipe mode: run_id={}, agent={}",
         run_id,

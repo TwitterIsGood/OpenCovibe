@@ -188,7 +188,7 @@ pub fn build_adapter_settings(
     }
 }
 
-/// Build CLI args for settings flags (shared between stream and pipe/pty modes).
+/// Build CLI args for settings flags (shared between stream and pipe modes).
 /// Returns Vec of args to append. `print_mode` controls print-only flags.
 pub fn build_settings_args(settings: &AdapterSettings, print_mode: bool) -> Vec<String> {
     let mut args = Vec::new();
@@ -278,7 +278,7 @@ pub fn build_settings_args(settings: &AdapterSettings, print_mode: bool) -> Vec<
     }
 
     // Budget and fallback apply in both stream and print modes for stream sessions,
-    // but only in print mode for pipe/pty (single-shot)
+    // but only in print mode for pipe (single-shot)
     if let Some(budget) = settings.max_budget_usd {
         args.push("--max-budget-usd".into());
         args.push(budget.to_string());

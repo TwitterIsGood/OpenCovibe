@@ -9,7 +9,6 @@ pub mod web_server;
 
 use agent::adapter::new_actor_session_map;
 use agent::control::CliInfoCache;
-use agent::pty::new_pty_map;
 use agent::spawn_locks::SpawnLocks;
 use agent::stream::new_process_map;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
@@ -123,7 +122,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(new_process_map())
-        .manage(new_pty_map())
         .manage(new_actor_session_map())
         .manage(CliInfoCache::new())
         .manage(Arc::new(EventWriter::new()))
@@ -192,10 +190,6 @@ pub fn run() {
             commands::diagnostics::run_diagnostics,
             commands::diagnostics::detect_local_proxy,
             commands::diagnostics::test_api_connectivity,
-            commands::pty::spawn_pty,
-            commands::pty::write_pty,
-            commands::pty::resize_pty,
-            commands::pty::close_pty,
             commands::session::start_session,
             commands::session::send_session_message,
             commands::session::stop_session,
@@ -470,10 +464,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// Two-phase approach:
 /// - Phase 1: Wait up to 3s for actors to exit (cancel token already fired → handle_stop → kill+wait).
 /// - Phase 2: Drain remaining actors, try_send Stop, join with 2s timeout, abort if stuck.
-/// - Then drain ProcessMap (stream processes) and PtyMap (terminal processes).
+/// - Then drain ProcessMap (stream processes).
 async fn graceful_shutdown_actors(app: &tauri::AppHandle) {
     use crate::agent::adapter::ActorSessionMap;
-    use crate::agent::pty::PtyMap;
     use crate::agent::session_actor::ActorCommand;
     use crate::agent::stream::ProcessMap;
 
@@ -549,25 +542,6 @@ async fn graceful_shutdown_actors(app: &tauri::AppHandle) {
             log::debug!("[app] graceful shutdown: killing stream process {}", run_id);
             let _ = child.kill().await;
             let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
-        }
-    }
-
-    // ── Kill remaining PTY processes (std sync Mutex) ──
-    // Drain to Vec, release lock, then kill. Don't wait — portable_pty::Child::wait()
-    // is synchronous blocking; spawn_blocking during runtime shutdown can hang.
-    if let Some(pty_map) = app.try_state::<PtyMap>() {
-        let to_kill: Vec<_> = match pty_map.lock() {
-            Ok(mut map) => map.drain().collect(),
-            Err(e) => {
-                log::warn!("[app] graceful shutdown: failed to lock PTY map: {}", e);
-                Vec::new()
-            }
-        };
-        for (run_id, mut session) in to_kill {
-            log::debug!("[app] graceful shutdown: killing PTY process {}", run_id);
-            let _ = session.child.kill();
-            // No wait — synchronous blocking wait is unsafe during shutdown.
-            // Process exit / Job Object handles cleanup.
         }
     }
 

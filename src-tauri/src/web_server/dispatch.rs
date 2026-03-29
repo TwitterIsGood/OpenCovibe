@@ -1131,9 +1131,6 @@ pub async fn dispatch_command(
         "capture_screenshot"
         | "update_screenshot_hotkey"
         | "get_clipboard_files"
-        | "spawn_pty"
-        | "resize_pty"
-        | "write_pty"
         | "run_claude_login"
         | "check_for_updates"
         | "send_chat_message" => Err("desktop only".to_string()),
@@ -1236,21 +1233,9 @@ async fn stop_run_impl(id: String, state: &AppState) -> Result<bool, String> {
         return Ok(true);
     }
 
-    // Fall through to PTY / pipe
-    let pty_killed = crate::agent::pty::close_pty(&state.pty_map, &id).unwrap_or(false);
-    if !pty_killed {
-        let killed = crate::agent::stream::stop_process(&state.process_map, &id).await;
-        if !killed {
-            if let Err(e) = crate::storage::runs::update_status(
-                &id,
-                RunStatus::Stopped,
-                None,
-                Some("Stopped by user".to_string()),
-            ) {
-                log::warn!("[dispatch] stop_run: failed to update status: {}", e);
-            }
-        }
-    } else if let Err(e) = crate::storage::runs::update_status(
+    // Fall through to pipe mode (Codex)
+    crate::agent::stream::stop_process(&state.process_map, &id).await;
+    if let Err(e) = crate::storage::runs::update_status(
         &id,
         RunStatus::Stopped,
         None,

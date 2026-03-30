@@ -198,7 +198,6 @@ export class SessionStore {
   error: string = $state("");
   agent: string = $state("claude");
   authMode: string = $state("cli");
-  ptySpawned: boolean = $state(false);
 
   // ── Protocol extension fields ──
   systemStatus = $state<{ status?: string } | null>(null);
@@ -1181,7 +1180,7 @@ export class SessionStore {
     };
     this.model = "";
     this.error = "";
-    this.ptySpawned = false;
+
     this.systemStatus = null;
     this.authStatus = null;
     this.hookEvents = [];
@@ -1713,9 +1712,6 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(run.id);
         }
-      } else if (this.agent === "claude") {
-        // CLI PTY mode — caller handles PTY spawn
-        // Return run ID; page will queue pendingMessage and spawn PTY
       } else {
         // Codex pipe mode
         this._setPhase("running");
@@ -1749,12 +1745,6 @@ export class SessionStore {
         } else {
           this._startResponseTimeout(this.run.id);
         }
-      } else if (this.agent === "claude" && this.ptySpawned) {
-        await api.sendChatMessage(
-          this.run.id,
-          text,
-          attachments.length > 0 ? attachments : undefined,
-        );
       } else {
         this._setPhase("running");
         await api.sendChatMessage(
@@ -1790,7 +1780,7 @@ export class SessionStore {
         // Session may already be dead
       }
       this._setPhase("stopped");
-      this.ptySpawned = false;
+  
       this.run = { ...this.run, status: "stopped" };
     }
   }
@@ -1831,7 +1821,7 @@ export class SessionStore {
       // Always clean up frontend state, even if backend calls failed.
       // If the process is already dead, the UI must not stay stuck in "running".
       this._setPhase("stopped");
-      this.ptySpawned = false;
+  
       this.run = { ...this.run!, status: "stopped" };
       this._stopping = false;
     }
@@ -2218,25 +2208,6 @@ export class SessionStore {
     this._resolvePermission("allow", requestId);
   }
 
-  /** Handle PTY exit event. */
-  handlePtyExit(): void {
-    const target: SessionPhase =
-      this.run?.status === "running"
-        ? "completed"
-        : this.phase === "stopped"
-          ? "stopped"
-          : "completed";
-    this._setPhase(target);
-    this.ptySpawned = false;
-    if (this.run) {
-      api
-        .getRun(this.run.id)
-        .then((r) => {
-          this.run = r;
-        })
-        .catch((e) => dbgWarn("store", "getRun after pty exit failed:", e));
-    }
-  }
 
   /** Handle chat-done event (pipe mode). */
   handleChatDone(_done: { ok: boolean; code: number; error?: string }): void {

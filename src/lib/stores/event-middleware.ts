@@ -1,10 +1,10 @@
 /**
  * EventMiddleware: unified Tauri event listener management.
  *
- * - Registers all 8 Tauri event listeners once
+ * - Registers Tauri event listeners once
  * - Routes events by run_id to the subscribed SessionStore
  * - Microbatches bus-events (16ms) to reduce reactive updates
- * - PTY/Pipe events go through handler callbacks (DOM-bound)
+ * - Pipe events go through handler callbacks (DOM-bound)
  */
 import { dbg, dbgWarn } from "$lib/utils/debug";
 import type { BusEvent, HookEvent } from "$lib/types";
@@ -13,11 +13,6 @@ import { markAttention, clearAttention } from "./attention-store.svelte";
 import { getTransport } from "$lib/transport";
 
 // ── Handler interfaces (page-level DOM callbacks) ──
-
-export interface PtyHandler {
-  onOutput(payload: { run_id: string; data: string }): void;
-  onExit(payload: { run_id: string; exit_code: number }): void;
-}
 
 export interface PipeHandler {
   onDelta(delta: { text: string }): void;
@@ -37,7 +32,6 @@ export class EventMiddleware {
   private _currentStore: SessionStore | null = null;
 
   // Handler callbacks (set by page component)
-  private _ptyHandler: PtyHandler | null = null;
   private _pipeHandler: PipeHandler | null = null;
   private _runEventHandler: RunEventHandler | null = null;
 
@@ -83,19 +77,7 @@ export class EventMiddleware {
       this._handleBusEvent(ev);
     });
 
-    // 2. PTY output
-    await reg<{ run_id: string; data: string }>("pty-output", (payload) => {
-      dbg("middleware", "pty-output", { run_id: payload.run_id });
-      this._ptyHandler?.onOutput(payload);
-    });
-
-    // 3. PTY exit
-    await reg<{ run_id: string; exit_code: number }>("pty-exit", (payload) => {
-      dbg("middleware", "pty-exit", payload);
-      this._ptyHandler?.onExit(payload);
-    });
-
-    // 4. Chat delta (pipe mode)
+    // 2. Chat delta (pipe mode)
     await reg<{ text: string }>("chat-delta", (payload) => {
       dbg("middleware", "chat-delta", { len: payload.text.length });
       this._pipeHandler?.onDelta(payload);
@@ -222,10 +204,6 @@ export class EventMiddleware {
   }
 
   // ── Handler setters ──
-
-  setPtyHandler(handler: PtyHandler | null): void {
-    this._ptyHandler = handler;
-  }
 
   setPipeHandler(handler: PipeHandler | null): void {
     this._pipeHandler = handler;

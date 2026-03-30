@@ -103,8 +103,6 @@
   let settings = $state<UserSettings | null>(null);
   let xtermRef: XTerminal | undefined = $state();
   let promptRef: PromptInput | undefined = $state();
-  let xtermReady = $state(false);
-  let pendingMessage = $state<{ text: string; attachments: Attachment[] } | null>(null);
   let sidebarCollapsed = $state(false);
   /** Reactive cwd override for new-chat-in-folder (cleared when a run is loaded) */
   let folderCwdOverride = $state("");
@@ -1138,29 +1136,6 @@
       if (!destroyed) middlewareReady = true;
     })();
 
-    // PTY handler: write binary data to xterm
-    middleware.setPtyHandler({
-      onOutput(payload) {
-        if (store.run && payload.run_id === store.run.id && xtermRef) {
-          try {
-            const binary = atob(payload.data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              bytes[i] = binary.charCodeAt(i);
-            }
-            xtermRef.writeData(bytes);
-          } catch {
-            // ignore decode errors
-          }
-        }
-      },
-      onExit(payload) {
-        if (store.run && payload.run_id === store.run.id) {
-          store.handlePtyExit();
-        }
-      },
-    });
-
     // Pipe handler: chat-delta / chat-done (Codex pipe mode)
     middleware.setPipeHandler({
       onDelta(delta) {
@@ -1615,45 +1590,16 @@
     }
   });
 
-  // ── PTY helpers ──
+  // ── Terminal helpers ──
 
-  async function handleTermReady(cols: number, rows: number) {
-    xtermReady = true;
-    if (
-      store.run &&
-      !store.ptySpawned &&
-      pendingMessage &&
-      store.agent === "claude" &&
-      !store.useStreamSession
-    ) {
-      await doSpawnPty(cols, rows);
-    }
+  function handleTermReady(_cols: number, _rows: number) {
+    // Terminal ready — Codex pipe mode is output-only, no setup needed
   }
 
-  async function doSpawnPty(cols: number, rows: number) {
-    if (!store.run || store.ptySpawned) return;
-    try {
-      await api.spawnPty(store.run.id, rows, cols);
-      store.ptySpawned = true;
-      store.phase = "running";
-      pendingMessage = null;
-      requestAnimationFrame(() => promptRef?.focus());
-    } catch (e) {
-      store.error = String(e);
-    }
+  function handleTermResize(_cols: number, _rows: number) {
+    // Codex pipe mode doesn't need resize — terminal is output-only
   }
 
-  function handleTermResize(cols: number, rows: number) {
-    if (!store.run || !store.ptySpawned) return;
-    api.resizePty(store.run.id, rows, cols).catch((e) => dbgWarn("chat", "resizePty failed:", e));
-  }
-
-  function handleTermData(data: string) {
-    if (!store.run || !store.ptySpawned) return;
-    const bytes = new TextEncoder().encode(data);
-    const b64 = btoa(String.fromCharCode(...bytes));
-    api.writePty(store.run.id, b64).catch((e) => dbgWarn("chat", "writePty failed:", e));
-  }
 
   // ── Chat scroll ──
 
@@ -1770,13 +1716,6 @@
         // Re-detect CLI version on new session (picks up external updates)
         loadCliVersionInfo();
 
-        // CLI PTY mode: queue message and spawn PTY
-        if (!store.useStreamSession && store.agent === "claude") {
-          pendingMessage = { text, attachments };
-          if (xtermReady && xtermRef) {
-            await doSpawnPty(80, 24);
-          }
-        }
       } else if (store.useStreamSession && !store.sessionAlive && store.run.session_id) {
         // Stopped stream session: atomic resume + send (message written to CLI stdin at spawn)
         dbg("chat", "auto-resume on send", {
@@ -4287,13 +4226,12 @@
             </svg>
           </button>
         {/if}
-      {:else if store.ptySpawned || pendingMessage || (store.run && store.run.status !== "pending")}
+      {:else if store.run && store.run.status !== "pending"}
         <!-- CLI mode: terminal -->
         <XTerminal
           bind:this={xtermRef}
           onResize={handleTermResize}
           onReady={handleTermReady}
-          onData={handleTermData}
           class="h-full"
         />
       {:else}
@@ -4564,7 +4502,7 @@
       </div>
     {/if}
 
-    {#if !store.ptySpawned || store.sessionAlive}
+    {#if store.sessionAlive || !store.run || store.phase === "empty" || store.phase === "ready"}
       <PromptInput
         bind:this={promptRef}
         agent={store.agent}

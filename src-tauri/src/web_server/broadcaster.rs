@@ -10,7 +10,7 @@ use tauri::Emitter;
 /// Message envelope for broadcast channels.
 #[derive(Debug, Clone)]
 pub struct BroadcastMsg {
-    /// Event name (e.g. "bus-event", "pty-output", "chat-delta")
+    /// Event name (e.g. "bus-event", "chat-delta", "hook-event")
     pub event_name: String,
     /// Serialized payload
     pub payload: Value,
@@ -25,7 +25,7 @@ pub struct BroadcastMsg {
 pub struct EventBroadcaster {
     /// A-class channel: reliable, large capacity, for replayable bus-events
     a_tx: broadcast::Sender<BroadcastMsg>,
-    /// B-class channel: lossy, medium capacity, for realtime streams (pty/chat/run-event)
+    /// B-class channel: lossy, medium capacity, for realtime streams (chat/run-event/hook)
     b_tx: broadcast::Sender<BroadcastMsg>,
 }
 
@@ -122,7 +122,7 @@ impl BroadcastEmitter {
     }
 
     /// B-class: Tauri emit + broadcast (no persist, no seq).
-    /// For realtime streams: pty-output, pty-exit, chat-delta, chat-done, run-event, etc.
+    /// For realtime streams: chat-delta, chat-done, run-event, hook-event, etc.
     pub fn emit_realtime<T: Serialize + Clone>(
         &self,
         event_name: &str,

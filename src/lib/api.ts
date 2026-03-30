@@ -386,22 +386,6 @@ export async function testRemoteHost(
   });
 }
 
-// PTY
-export async function spawnPty(runId: string, rows: number, cols: number): Promise<void> {
-  dbg("api", "spawnPty", { runId, rows, cols });
-  return invoke("spawn_pty", { runId, rows, cols });
-}
-
-export async function writePty(runId: string, data: string): Promise<void> {
-  dbg("api", "writePty", { runId, dataLen: data.length });
-  return invoke("write_pty", { runId, data });
-}
-
-export async function resizePty(runId: string, rows: number, cols: number): Promise<void> {
-  dbg("api", "resizePty", { runId, rows, cols });
-  return invoke("resize_pty", { runId, rows, cols });
-}
-
 // CLI Control Protocol
 export async function getCliInfo(forceRefresh?: boolean): Promise<CliInfo> {
   dbg("api", "getCliInfo", { forceRefresh });

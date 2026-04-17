@@ -1099,36 +1099,6 @@
     return () => window.removeEventListener("ocv:runs-changed", onRunsChanged);
   });
 
-  // Check for pending plan from ExitPlanMode "clear context"
-  onMount(() => {
-    const pendingPlan = sessionStorage.getItem("ocv:pending-plan-prompt");
-    const pendingCwd = sessionStorage.getItem("ocv:pending-plan-cwd");
-    if (pendingPlan && !store.run) {
-      sessionStorage.removeItem("ocv:pending-plan-prompt");
-      sessionStorage.removeItem("ocv:pending-plan-cwd");
-      const cwd = pendingCwd || localStorage.getItem("ocv:project-cwd") || "";
-      dbg("chat", "auto-sending pending plan from ExitPlanMode clear context");
-      // Use tick to ensure mount is complete
-      tick().then(async () => {
-        try {
-          const newRunId = await store.startSession(pendingPlan, cwd, []);
-          goto(`/chat?run=${newRunId}`);
-          // Set permission mode to acceptEdits in new session
-          // Wait for session to initialize first
-          setTimeout(async () => {
-            if (store.run) {
-              await api.setPermissionMode(store.run.id, "acceptEdits");
-              store.permissionMode = "acceptEdits";
-              dbg("chat", "new session permission mode set to acceptEdits");
-            }
-          }, 2000);
-        } catch (e) {
-          dbgWarn("chat", "auto-send pending plan failed:", e);
-        }
-      });
-    }
-  });
-
   // Start middleware + register handlers
   onMount(() => {
     let destroyed = false;

@@ -1,15 +1,19 @@
 <script lang="ts">
   import ModelSelector from "./ModelSelector.svelte";
   import DiffModal from "./DiffModal.svelte";
+  import ExportModal from "./ExportModal.svelte";
   import * as api from "$lib/api";
   import { dbgWarn } from "$lib/utils/debug";
   import { t } from "$lib/i18n/index.svelte";
+  import type { TimelineEntry } from "$lib/types";
 
   import { PLATFORM_PRESETS } from "$lib/utils/platform-presets";
 
   let {
     agent = "claude",
     runId = "",
+    runName = "",
+    timeline = [] as TimelineEntry[],
     planMode = $bindable(false),
     onSendPrompt,
     onOpenPalette,
@@ -18,6 +22,8 @@
   }: {
     agent?: string;
     runId?: string;
+    runName?: string;
+    timeline?: TimelineEntry[];
     planMode?: boolean;
     onSendPrompt?: (prompt: string) => void;
     onOpenPalette?: () => void;
@@ -31,8 +37,8 @@
 
   let model = $state("");
   let diffOpen = $state(false);
+  let exportOpen = $state(false);
   let costDisplay = $state("");
-  let exporting = $state(false);
 
   // Load agent settings on mount and when agent changes
   $effect(() => {
@@ -97,24 +103,7 @@
   }
 
   async function handleExport() {
-    if (!runId) return;
-    exporting = true;
-    try {
-      const md = await api.exportConversation(runId);
-      // Use Tauri dialog to save
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        defaultPath: `conversation-${runId.slice(0, 8)}.md`,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
-      });
-      if (path) {
-        await api.writeTextFile(path, md);
-      }
-    } catch (e) {
-      dbgWarn("toolbar", "export failed:", e);
-    } finally {
-      exporting = false;
-    }
+    exportOpen = true;
   }
 
   let isClaude = $derived(agent === "claude");
@@ -122,7 +111,7 @@
 
 <div class="flex flex-wrap items-center gap-1.5 px-6 py-2 border-b bg-muted/20">
   <!-- Model selector -->
-  <ModelSelector bind:value={model} {agent} onchange={handleModelChange} />
+  <ModelSelector bind:value={model} _agent={agent} onchange={handleModelChange} />
 
   <!-- Platform label (API mode, read-only) -->
   {#if authMode === "api" && platformId && platformId !== "anthropic"}
@@ -225,7 +214,7 @@
   <button
     class="flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium hover:bg-accent transition-colors disabled:opacity-50"
     onclick={handleExport}
-    disabled={!runId || exporting}
+    disabled={!runId}
     title={t("toolbar_exportTitle")}
   >
     <svg
@@ -271,3 +260,4 @@
 </div>
 
 <DiffModal bind:open={diffOpen} />
+<ExportModal bind:open={exportOpen} {runId} {runName} {timeline} />

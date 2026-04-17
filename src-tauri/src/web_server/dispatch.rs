@@ -177,6 +177,20 @@ pub async fn dispatch_command(
             let md = crate::commands::export::export_conversation(run_id)?;
             Ok(json!(md))
         }
+        "export_conversation_markdown" => {
+            let run_id = extract_str(&params, "run_id")?;
+            let range: crate::commands::export::ExportRange =
+                serde_json::from_value(params.get("range").cloned().unwrap_or(json!({"type":"full"})))
+                    .map_err(|e| e.to_string())?;
+            let md = crate::commands::export::export_conversation_markdown(run_id, range)?;
+            Ok(json!(md))
+        }
+        "write_export_file" => {
+            let path = extract_str(&params, "path")?;
+            let content = extract_str(&params, "content")?;
+            crate::commands::export::write_export_file(path, content).await?;
+            Ok(json!(null))
+        }
 
         // ── Settings ──
         "get_user_settings" => {

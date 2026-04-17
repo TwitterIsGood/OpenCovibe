@@ -279,6 +279,24 @@ export async function exportConversation(runId: string): Promise<string> {
   return invoke<string>("export_conversation", { runId });
 }
 
+export type ExportRange =
+  | { type: "full" }
+  | { type: "range"; fromSeq: number; toSeq: number }
+  | { type: "messages"; seqs: number[] };
+
+export async function exportConversationMarkdown(
+  runId: string,
+  range: ExportRange,
+): Promise<string> {
+  dbg("api", "exportConversationMarkdown", { runId, rangeType: range.type });
+  return invoke<string>("export_conversation_markdown", { runId, range });
+}
+
+export async function writeExportFile(path: string, content: string): Promise<void> {
+  dbg("api", "writeExportFile", { path, contentLen: content.length });
+  return invoke<void>("write_export_file", { path, content });
+}
+
 // Memory file candidates
 export async function listMemoryFiles(
   cwd?: string,

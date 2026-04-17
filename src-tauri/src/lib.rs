@@ -172,6 +172,8 @@ pub fn run() {
             commands::git::get_git_diff,
             commands::git::get_git_status,
             commands::export::export_conversation,
+            commands::export::export_conversation_markdown,
+            commands::export::write_export_file,
             commands::files::read_text_file,
             commands::files::write_text_file,
             commands::files::read_task_output,

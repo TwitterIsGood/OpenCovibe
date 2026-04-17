@@ -59,6 +59,7 @@
   import type { PromptInputSnapshot } from "$lib/types";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import HookReviewCard from "$lib/components/HookReviewCard.svelte";
+  import ChatToolbar from "$lib/components/ChatToolbar.svelte";
   import ContextUsageGrid from "$lib/components/ContextUsageGrid.svelte";
   import CostSummaryView from "$lib/components/CostSummaryView.svelte";
   import { parseContextMarkdown } from "$lib/utils/context-parser";
@@ -3588,6 +3589,20 @@
           >
         </button>
       </div>
+    {/if}
+
+    <!-- Chat Toolbar (model selector, plan mode, export, etc.) -->
+    {#if store.useStreamSession && store.run?.id}
+      <ChatToolbar
+        agent={store.run?.agent ?? store.agent}
+        runId={store.run?.id ?? ""}
+        runName={store.run?.name ?? ""}
+        timeline={store.timeline}
+        onSendPrompt={(prompt) => sendMessage(prompt, [])}
+        onOpenPalette={() => {}}
+        platformId={store.run?.platform_id ?? ""}
+        authMode={store.apiKeySource ? "api" : "cli"}
+      />
     {/if}
 
     <!-- Main area -->

@@ -2,6 +2,7 @@ use crate::models::{now_iso, RunMeta, RunStatus, TaskRun};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 
 // ── Per-run mutex for serializing read-modify-write on meta.json ──
@@ -273,6 +274,7 @@ pub fn persist_result_error(
 }
 
 pub fn list_runs() -> Vec<TaskRun> {
+    let start = std::time::Instant::now();
     let runs_dir = super::runs_dir();
     if !runs_dir.exists() {
         return vec![];
@@ -321,52 +323,82 @@ pub fn list_runs() -> Vec<TaskRun> {
     }
 
     runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    log::debug!(
+        "[runs] list_runs: count={} in {:?}",
+        runs.len(),
+        start.elapsed()
+    );
     runs
 }
+
+/// Tail buffer size for summary extraction (8KB covers ~50+ JSONL lines).
+const SUMMARY_TAIL_BYTES: u64 = 8192;
 
 fn summarize_events(events_path: &std::path::Path) -> (Option<String>, u32, Option<String>) {
     if !events_path.exists() {
         return (None, 0, None);
     }
-    let content = match fs::read_to_string(events_path) {
-        Ok(c) => c,
+
+    let file_size = match fs::metadata(events_path) {
+        Ok(m) => m.len(),
         Err(_) => return (None, 0, None),
     };
 
-    // Count non-empty lines for msg_count (cheap string scan — no JSON parsing)
-    let total_lines = content.lines().filter(|l| !l.trim().is_empty()).count() as u32;
+    // For small files, just read the whole thing
+    if file_size <= SUMMARY_TAIL_BYTES {
+        let content = match fs::read_to_string(events_path) {
+            Ok(c) => c,
+            Err(_) => return (None, 0, None),
+        };
+        return summarize_from_lines(&content, true);
+    }
 
-    // For last_activity + last_preview: only parse last few lines (most recent events)
+    // For large files: tail-only read
+    let mut file = match fs::File::open(events_path) {
+        Ok(f) => f,
+        Err(_) => return (None, 0, None),
+    };
+
+    let tail_start = file_size - SUMMARY_TAIL_BYTES;
+    if file.seek(SeekFrom::Start(tail_start)).is_err() {
+        return (None, 0, None);
+    }
+
+    let mut buf = vec![0u8; SUMMARY_TAIL_BYTES as usize];
+    let bytes_read = match file.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return (None, 0, None),
+    };
+    buf.truncate(bytes_read);
+
+    let content = String::from_utf8_lossy(&buf);
+    // Skip first line (may be truncated by seek)
+    summarize_from_lines(&content, false)
+}
+
+/// Parse lines for last_ts, msg_count (tail-only = estimate), and last_preview.
+fn summarize_from_lines(content: &str, include_first_line: bool) -> (Option<String>, u32, Option<String>) {
     let mut last_ts: Option<String> = None;
     let mut msg_count: u32 = 0;
     let mut last_preview: Option<String> = None;
 
-    // Collect last N non-empty lines and count messages only in those
-    // For full msg_count, count user_message/message_complete across entire file cheaply
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Cheap substring check before full JSON parse for msg_count
-        if line.contains("\"user_message\"")
-            || line.contains("\"message_complete\"")
-            || line.contains("\"type\":\"user\"")
-            || line.contains("\"type\":\"assistant\"")
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = if include_first_line { 0 } else { 1.min(lines.len()) };
+
+    for line in &lines[start..] {
+        let trimmed = line.trim();
+
+        // Cheap msg_count via substring
+        if trimmed.contains("\"user_message\"")
+            || trimmed.contains("\"message_complete\"")
+            || trimmed.contains("\"type\":\"user\"")
+            || trimmed.contains("\"type\":\"assistant\"")
         {
             msg_count += 1;
         }
-    }
 
-    // Parse only last 5 lines for timestamp + preview
-    let last_lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    let tail_start = if last_lines.len() > 5 {
-        last_lines.len() - 5
-    } else {
-        0
-    };
-    for line in &last_lines[tail_start..] {
-        if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+        // Parse for last_ts + last_preview
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(trimmed) {
             if event.get("_bus").and_then(|v| v.as_bool()).unwrap_or(false) {
                 if let Some(ts) = event.get("ts").and_then(|v| v.as_str()) {
                     last_ts = Some(ts.to_string());
@@ -397,7 +429,6 @@ fn summarize_events(events_path: &std::path::Path) -> (Option<String>, u32, Opti
         }
     }
 
-    let _ = total_lines; // available for future use
     (last_ts, msg_count, last_preview)
 }
 

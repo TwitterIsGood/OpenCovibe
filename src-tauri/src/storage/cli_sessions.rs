@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -754,6 +754,12 @@ pub fn invalidate_imported_cache() {
 
 const MAX_DISCOVER_CANDIDATES: usize = 500;
 
+/// Head+tail lightweight read buffer size (64KB).
+/// Matches ClaudeCodeReader's `LITE_READ_BYTES` strategy: 64KB is enough
+/// to cover ~200+ JSONL lines, sufficient for metadata extraction without
+/// reading the entire file.
+const LITE_READ_BYTES: u64 = 65_536;
+
 /// Discover CLI sessions for a given working directory.
 pub fn discover_sessions(target_cwd: &str) -> Result<DiscoverResult, String> {
     let start = std::time::Instant::now();
@@ -913,14 +919,17 @@ fn extract_summary(
     target_cwd: &str,
     imported: &HashMap<(String, String), String>,
 ) -> Result<Option<CliSessionSummary>, String> {
-    let file = File::open(path).map_err(|e| format!("open: {}", e))?;
-    let reader = BufReader::new(&file);
-
     let session_id = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
+
+    if size == 0 {
+        return Ok(None);
+    }
+
+    let mut file = File::open(path).map_err(|e| format!("open: {}", e))?;
 
     let mut cwd: Option<String> = None;
     let mut first_prompt: Option<String> = None;
@@ -931,28 +940,24 @@ fn extract_summary(
     let mut message_count: u32 = 0;
     let mut last_ts: Option<String> = None;
 
-    // Read first 20 lines for summary extraction
-    let mut head_lines = 0;
-    let mut head_bytes: u64 = 0; // Track bytes consumed by head for tail overlap check
-    for line_result in reader.lines() {
-        let line = line_result.map_err(|e| format!("read: {}", e))?;
-        head_lines += 1;
-        if head_lines > 20 {
-            break;
-        }
-        head_bytes += (line.len() as u64) + 1; // +1 for newline
+    // ---- Read head region (first 64KB) ----
+    let head_size = std::cmp::min(size, LITE_READ_BYTES) as usize;
+    let mut head_buf = vec![0u8; head_size];
+    file.read_exact(&mut head_buf)
+        .map_err(|e| format!("read head: {}", e))?;
 
+    let head_str = String::from_utf8_lossy(&head_buf);
+    let head_lines: Vec<&str> = head_str.lines().collect();
+
+    for line in &head_lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        // Cheap substring matching for message_count
         if trimmed.contains("\"type\":\"user\"") || trimmed.contains("\"type\":\"assistant\"") {
             message_count += 1;
         }
-
-        // Check for subagents
         if trimmed.contains("\"parentToolUseID\"") || trimmed.contains("\"parent_tool_use_id\"") {
             has_subagents = true;
         }
@@ -961,14 +966,12 @@ fn extract_summary(
             continue;
         };
 
-        // Extract cwd from any line that has it
         if cwd.is_none() {
             if let Some(c) = json_val.get("cwd").and_then(|v| v.as_str()) {
                 cwd = Some(c.to_string());
             }
         }
 
-        // Extract timestamp
         if let Some(ts) = json_val.get("timestamp").and_then(|v| v.as_str()) {
             if started_at.is_none() {
                 started_at = Some(ts.to_string());
@@ -976,8 +979,9 @@ fn extract_summary(
             last_ts = Some(ts.to_string());
         }
 
-        // Extract first user prompt
-        if first_prompt.is_none() && json_val.get("type").and_then(|v| v.as_str()) == Some("user") {
+        if first_prompt.is_none()
+            && json_val.get("type").and_then(|v| v.as_str()) == Some("user")
+        {
             let message = json_val.get("message").unwrap_or(&json_val);
             if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
                 if is_first_prompt_text(text) {
@@ -992,7 +996,6 @@ fn extract_summary(
             }
         }
 
-        // Extract model from system/init progress events
         if json_val.get("type").and_then(|v| v.as_str()) == Some("progress") {
             if let Some(data) = json_val.get("data") {
                 if data.get("type").and_then(|v| v.as_str()) == Some("init") {
@@ -1006,9 +1009,11 @@ fn extract_summary(
             }
         }
 
-        // Also check direct system/init
         if json_val.get("type").and_then(|v| v.as_str()) == Some("system")
-            && json_val.get("subtype").and_then(|v| v.as_str()) == Some("init")
+            && json_val
+                .get("subtype")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "init")
         {
             if model.is_none() {
                 if let Some(m) = json_val.get("model").and_then(|v| v.as_str()) {
@@ -1028,65 +1033,37 @@ fn extract_summary(
         }
     }
 
-    // Fallback: if no cwd found in first 20 lines, check if file is in exact encoded dir
-    if cwd.is_none() {
-        let encoded = encode_cwd(target_cwd);
-        if let Some(parent) = path.parent() {
-            if parent.file_name().and_then(|s| s.to_str()) == Some(&encoded) {
-                // File is in the exact encoded dir — scan deeper for cwd
-                let file2 = File::open(path).map_err(|e| format!("open: {}", e))?;
-                let reader2 = BufReader::new(file2);
-                for (i, line_result) in reader2.lines().enumerate() {
-                    if i >= 100 {
-                        break;
-                    }
-                    if i < 20 {
-                        continue; // Already scanned
-                    }
-                    let line = line_result.map_err(|e| format!("read: {}", e))?;
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(json_val) = serde_json::from_str::<Value>(trimmed) {
-                        if let Some(c) = json_val.get("cwd").and_then(|v| v.as_str()) {
-                            cwd = Some(c.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // ---- Read tail region (last 64KB) ----
+    if size > LITE_READ_BYTES {
+        let tail_start = size - LITE_READ_BYTES;
+        file.seek(SeekFrom::Start(tail_start))
+            .map_err(|e| format!("seek tail: {}", e))?;
 
-    // Read tail for last timestamp (and remaining message count for large files)
-    let file_for_tail = File::open(path).map_err(|e| format!("open: {}", e))?;
-    let mut tail_reader = BufReader::new(file_for_tail);
-    let tail_offset = size.saturating_sub(8192);
-    // Only count messages from tail if tail starts beyond what head already scanned
-    let count_messages_in_tail = tail_offset >= head_bytes;
-    if tail_offset > 0 {
-        tail_reader
-            .seek(SeekFrom::Start(tail_offset))
-            .map_err(|e| format!("seek: {}", e))?;
-        // Skip partial first line
-        let mut skip = String::new();
-        let _ = tail_reader.read_line(&mut skip);
-    }
-    for line_result in tail_reader.lines() {
-        let line = line_result.map_err(|e| format!("read: {}", e))?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if count_messages_in_tail
-            && (trimmed.contains("\"type\":\"user\"") || trimmed.contains("\"type\":\"assistant\""))
-        {
-            message_count += 1;
-        }
-        if let Ok(json_val) = serde_json::from_str::<Value>(trimmed) {
-            if let Some(ts) = json_val.get("timestamp").and_then(|v| v.as_str()) {
-                last_ts = Some(ts.to_string());
+        let mut tail_buf = vec![0u8; LITE_READ_BYTES as usize];
+        let bytes_read = file
+            .read(&mut tail_buf)
+            .map_err(|e| format!("read tail: {}", e))?;
+        tail_buf.truncate(bytes_read);
+
+        let tail_str = String::from_utf8_lossy(&tail_buf);
+        let tail_lines: Vec<&str> = tail_str.lines().collect();
+
+        // Tail's first line may be truncated by the seek — skip it
+        for (i, line) in tail_lines.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.contains("\"type\":\"user\"") || trimmed.contains("\"type\":\"assistant\"") {
+                message_count += 1;
+            }
+            if let Ok(json_val) = serde_json::from_str::<Value>(trimmed) {
+                if let Some(ts) = json_val.get("timestamp").and_then(|v| v.as_str()) {
+                    last_ts = Some(ts.to_string());
+                }
             }
         }
     }

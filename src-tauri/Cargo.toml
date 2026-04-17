@@ -4,8 +4,8 @@ version = "0.1.54"
 edition = "2021"
 description = "Local-first desktop app for AI-assisted vibe coding"
 license = "Apache-2.0"
-repository = "https://github.com/AnyiWang/OpenCovibe"
-homepage = "https://github.com/AnyiWang/OpenCovibe"
+repository = "https://github.com/TwitterIsGood/OpenCovibe"
+homepage = "https://github.com/TwitterIsGood/OpenCovibe"
 
 [lib]
 name = "opencovibe_desktop_lib"

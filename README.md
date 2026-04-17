@@ -84,14 +84,14 @@ AI coding CLIs like Claude Code are powerful, but they run inside a terminal. Th
 
 ### Option A: Download Pre-built Binary (macOS)
 
-Download the latest `.dmg` from [Releases](https://github.com/AnyiWang/OpenCovibe/releases) — universal binary, supports both Apple Silicon and Intel Macs.
+Download the latest `.dmg` from [Releases](https://github.com/TwitterIsGood/OpenCovibe/releases) — universal binary, supports both Apple Silicon and Intel Macs.
 
 > **Note**: The app is not code-signed. On first launch, right-click and select "Open" to bypass macOS Gatekeeper.
 
 ### Option B: Automated Setup (macOS)
 
 ```bash
-git clone https://github.com/AnyiWang/OpenCovibe.git
+git clone https://github.com/TwitterIsGood/OpenCovibe.git
 cd OpenCovibe
 ./scripts/setup.sh          # add --yes to skip confirmation prompts
 npm run tauri dev
@@ -129,7 +129,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 **Build & Run:**
 
 ```bash
-git clone https://github.com/AnyiWang/OpenCovibe.git
+git clone https://github.com/TwitterIsGood/OpenCovibe.git
 cd OpenCovibe
 npm install
 npm run tauri dev
@@ -234,7 +234,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for de
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AnyiWang/OpenCovibe&type=Date)](https://star-history.com/#AnyiWang/OpenCovibe&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=TwitterIsGood/OpenCovibe&type=Date)](https://star-history.com/#TwitterIsGood/OpenCovibe&Date)
 
 ## License
 

@@ -4,13 +4,13 @@
   "description": "Local-first desktop app for AI-assisted vibe coding",
   "type": "module",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/AnyiWang/OpenCovibe",
+  "homepage": "https://github.com/TwitterIsGood/OpenCovibe",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AnyiWang/OpenCovibe.git"
+    "url": "https://github.com/TwitterIsGood/OpenCovibe.git"
   },
   "bugs": {
-    "url": "https://github.com/AnyiWang/OpenCovibe/issues"
+    "url": "https://github.com/TwitterIsGood/OpenCovibe/issues"
   },
   "engines": {
     "node": ">=20"

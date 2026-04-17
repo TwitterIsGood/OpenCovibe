@@ -3234,12 +3234,12 @@
       await api.stopSession(runId);
       dbg("chat", "ExitPlanMode: session stopped");
 
-      // 5. Navigate to fresh chat and schedule plan sending
+      // 5. Start fresh session with the plan directly
+      //    (NOT via sessionStorage + onMount — onMount won't re-fire on same-route goto)
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
-      sessionStorage.setItem("ocv:pending-plan-prompt", planPrompt);
-      sessionStorage.setItem("ocv:pending-plan-cwd", cwd);
-      goto("/chat");
-      // The fresh chat page mount will detect sessionStorage items and auto-send
+      store.permissionMode = "acceptEdits";
+      const newRunId = await store.startSession(planPrompt, cwd, []);
+      goto(`/chat?run=${newRunId}`);
     } catch (e) {
       dbgWarn("chat", "ExitPlanMode clear context failed:", e);
       store.pendingClearContextPlan = null;

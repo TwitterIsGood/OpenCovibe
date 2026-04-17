@@ -1990,6 +1990,10 @@
       placeholder={effectivePlaceholder}
       rows={1}
       {disabled}
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
+      autocomplete="off"
       class="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none disabled:opacity-50"
       style="min-height: 36px;"
     ></textarea>

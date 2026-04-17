@@ -6,6 +6,7 @@
 //!
 //! Uses in-memory cache with 120s TTL (same pattern as `claude_usage.rs`).
 
+use super::floor_char_boundary;
 use crate::models::RunMeta;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -152,7 +153,7 @@ fn scan_events_file(run_id: &str, events_path: &Path) -> Vec<PromptEntry> {
                             .unwrap_or("")
                             .to_string();
                         let truncated = if text.len() > MAX_TEXT_LEN {
-                            format!("{}…", &text[..text.floor_char_boundary(MAX_TEXT_LEN)])
+                            format!("{}…", &text[..floor_char_boundary(text, MAX_TEXT_LEN)])
                         } else {
                             text.to_string()
                         };
@@ -195,7 +196,7 @@ fn scan_events_file(run_id: &str, events_path: &Path) -> Vec<PromptEntry> {
                     .unwrap_or("")
                     .to_string();
                 let truncated = if text.len() > MAX_TEXT_LEN {
-                    format!("{}…", &text[..text.floor_char_boundary(MAX_TEXT_LEN)])
+                    format!("{}…", &text[..floor_char_boundary(text, MAX_TEXT_LEN)])
                 } else {
                     text.to_string()
                 };

@@ -3,6 +3,7 @@
 //! Reads Claude CLI transcript files (~/.claude/projects/*/*.jsonl) and converts
 //! them into OpenCovibe run format (~/.opencovibe/runs/{run-id}/).
 
+use super::floor_char_boundary;
 use crate::agent::claude_protocol::{validate_bus_event, ProtocolState};
 use crate::models::{BusEvent, ImportWatermark, RunMeta, RunSource, RunStatus};
 use crate::storage::events::{is_replayable, EventWriter};
@@ -981,7 +982,7 @@ fn extract_summary(
             if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
                 if is_first_prompt_text(text) {
                     let truncated = if text.len() > 200 {
-                        let end = text.floor_char_boundary(200);
+                        let end = floor_char_boundary(text, 200);
                         format!("{}...", &text[..end])
                     } else {
                         text.to_string()
@@ -1204,7 +1205,7 @@ pub fn import_session(
                 if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
                     if is_first_prompt_text(text) {
                         first_prompt = if text.len() > 200 {
-                            let end = text.floor_char_boundary(200);
+                            let end = floor_char_boundary(text, 200);
                             format!("{}...", &text[..end])
                         } else {
                             text.to_string()

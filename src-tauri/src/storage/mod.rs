@@ -76,6 +76,17 @@ pub(crate) fn dirs_next() -> Option<PathBuf> {
     home_dir().map(PathBuf::from)
 }
 
+pub(crate) fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    let mut i = idx;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 pub fn ensure_dir(path: &std::path::Path) -> std::io::Result<()> {
     if !path.exists() {
         std::fs::create_dir_all(path)?;

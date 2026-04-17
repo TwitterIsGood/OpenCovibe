@@ -6,6 +6,7 @@
 //!
 //! Uses in-memory cache with 120s TTL (same pattern as `prompt_index.rs`).
 
+use super::floor_char_boundary;
 use crate::models::RunStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -150,7 +151,7 @@ pub fn scan_run(run_id: &str, events_path: &Path, meta_json: &serde_json::Value)
     let prompt_preview = if prompt.len() > MAX_PREVIEW_LEN {
         format!(
             "{}...",
-            &prompt[..prompt.floor_char_boundary(MAX_PREVIEW_LEN)]
+            &prompt[..floor_char_boundary(prompt, MAX_PREVIEW_LEN)]
         )
     } else {
         prompt.to_string()
@@ -318,7 +319,7 @@ pub fn scan_run(run_id: &str, events_path: &Path, meta_json: &serde_json::Value)
                     if let Some(err) = event.get("error").and_then(|v| v.as_str()) {
                         has_errors = true;
                         let truncated = if err.len() > MAX_ERROR_LEN {
-                            format!("{}...", &err[..err.floor_char_boundary(MAX_ERROR_LEN)])
+                            format!("{}...", &err[..floor_char_boundary(err, MAX_ERROR_LEN)])
                         } else {
                             err.to_string()
                         };

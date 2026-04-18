@@ -1,13 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import type { AuthOverview, PlatformCredential } from "$lib/types";
+  import type { AuthOverview } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
-  import {
-    buildPlatformList,
-    findCredential,
-    PRESET_CATEGORIES,
-  } from "$lib/utils/platform-presets";
-  import { dbg } from "$lib/utils/debug";
+  import { onMount } from "svelte";
 
   let {
     authOverview = null,
@@ -16,12 +11,8 @@
     apiKeySource = "",
     hasRun = false,
     authMode = "",
-    platformCredentials = [],
-    platformId = "anthropic",
     onAuthModeChange,
-    onPlatformChange,
     variant = "default",
-    localProxyStatuses = {} as Record<string, { running: boolean; needsAuth: boolean }>,
   }: {
     authOverview?: AuthOverview | null;
     authSourceLabel?: string;
@@ -29,12 +20,8 @@
     apiKeySource?: string;
     hasRun?: boolean;
     authMode?: string;
-    platformCredentials?: PlatformCredential[];
-    platformId?: string;
     onAuthModeChange?: (mode: string) => void;
-    onPlatformChange?: (platformId: string) => void;
     variant?: "default" | "hero";
-    localProxyStatuses?: Record<string, { running: boolean; needsAuth: boolean }>;
   } = $props();
 
   let dropdownOpen = $state(false);
@@ -52,30 +39,11 @@
 
   let badgeColor = $derived(BADGE_COLORS[authSourceCategory] ?? "");
 
-  // ── Platform list for dropdown ──
-  let platforms = $derived(buildPlatformList(platformCredentials));
-
-  let groupedPlatforms = $derived.by(() => {
-    const groups: { id: string; label: string; items: typeof platforms }[] = [];
-    for (const cat of PRESET_CATEGORIES) {
-      const items = platforms.filter((p) => p.category === cat.id);
-      if (items.length > 0) groups.push({ id: cat.id, label: cat.label, items });
-    }
-    // Uncategorized
-    const categorized = new Set(PRESET_CATEGORIES.map((c) => c.id));
-    const uncategorized = platforms.filter((p) => !categorized.has(p.category ?? ""));
-    if (uncategorized.length > 0)
-      groups.push({ id: "other", label: "Other", items: uncategorized });
-    return groups;
-  });
-
   // ── Pre-session display ──
   let preSessionLabel = $derived.by(() => {
     if (!authOverview) return "";
     if (authOverview.auth_mode === "cli") return t("auth_cliAuth");
-    // For api mode: prefer frontend platform list (responds immediately to switch)
-    const p = platforms.find((pl) => pl.id === platformId);
-    return p?.name ?? authOverview.app_platform_name ?? t("auth_appApiKey");
+    return t("auth_appApiKey");
   });
 
   let preSessionDotColor = $derived.by(() => {
@@ -85,16 +53,7 @@
         ? "bg-emerald-500"
         : "bg-amber-500";
     }
-    // For api mode: local platforms use running status, others use API key
-    const selectedPreset = platforms.find((p) => p.id === platformId);
-    if (selectedPreset?.category === "local") {
-      const ps = localProxyStatuses?.[platformId];
-      if (ps?.running && !ps.needsAuth) return "bg-emerald-500";
-      if (ps?.running && ps.needsAuth) return "bg-amber-500";
-      return "bg-muted-foreground/30";
-    }
-    const hasCred = !!findCredential(platformCredentials, platformId)?.api_key;
-    return hasCred ? "bg-emerald-500" : "bg-amber-500";
+    return authOverview.app_has_credentials ? "bg-emerald-500" : "bg-amber-500";
   });
 
   // ── Loading label (shown before authOverview loads) ──
@@ -105,7 +64,7 @@
   });
 
   function toggleDropdown() {
-    if (hasRun) return; // Read-only during session
+    if (hasRun) return;
     dropdownOpen = !dropdownOpen;
     if (dropdownOpen && buttonEl) updateDropdownPosition();
   }
@@ -122,23 +81,9 @@
   }
 
   function selectMode(mode: string) {
-    // Keep dropdown open when switching to api mode (so user can pick platform)
-    if (mode !== "api") dropdownOpen = false;
+    dropdownOpen = false;
     onAuthModeChange?.(mode);
   }
-
-  function selectPlatform(id: string) {
-    dbg("auth-badge", "selectPlatform", { id });
-    dropdownOpen = false;
-    // Switch platform first (fast, just writes active_platform_id)
-    onPlatformChange?.(id);
-    // Then switch mode to api if not already
-    if (authOverview?.auth_mode !== "api") {
-      onAuthModeChange?.("api");
-    }
-  }
-
-  import { onMount } from "svelte";
 
   onMount(() => {
     function onDocClick(e: MouseEvent) {
@@ -193,7 +138,7 @@
 
     {#if dropdownOpen}
       <div
-        class="w-72 max-h-80 overflow-y-auto rounded-md border bg-background shadow-lg animate-fade-in"
+        class="w-64 rounded-md border bg-background shadow-lg animate-fade-in"
         style={dropdownStyle}
       >
         <div class="p-2 space-y-1">
@@ -270,115 +215,58 @@
             </div>
           </button>
 
-          <!-- App API Key option (div wrapper for expandable platform sublist) -->
-          <div class="rounded-sm {authOverview.auth_mode === 'api' ? 'bg-accent' : ''}">
-            <button
-              class="flex w-full items-start gap-2.5 px-2.5 py-2 text-sm hover:bg-accent transition-colors rounded-sm"
-              onclick={() => selectMode("api")}
-            >
-              <span class="mt-0.5 inline-block h-3.5 w-3.5 shrink-0">
-                {#if authOverview.auth_mode === "api"}
-                  <svg
-                    class="h-3.5 w-3.5 text-primary"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <circle cx="12" cy="12" r="10" /><circle
-                      cx="12"
-                      cy="12"
-                      r="4"
-                      fill="currentColor"
-                    />
-                  </svg>
-                {:else}
-                  <svg
-                    class="h-3.5 w-3.5 text-muted-foreground/50"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                  </svg>
-                {/if}
-              </span>
-              <div class="flex-1 text-left">
-                <p class="font-medium text-xs">
-                  {t("auth_appApiKey")}
-                  {#if authOverview.app_platform_name}
-                    <span class="font-normal text-muted-foreground">
-                      [{authOverview.app_platform_name}]
-                    </span>
-                  {/if}
+          <!-- App API Key option -->
+          <button
+            class="flex w-full items-start gap-2.5 rounded-sm px-2.5 py-2 text-sm hover:bg-accent transition-colors
+              {authOverview.auth_mode === 'api' ? 'bg-accent' : ''}"
+            onclick={() => selectMode("api")}
+          >
+            <span class="mt-0.5 inline-block h-3.5 w-3.5 shrink-0">
+              {#if authOverview.auth_mode === "api"}
+                <svg
+                  class="h-3.5 w-3.5 text-primary"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" /><circle
+                    cx="12"
+                    cy="12"
+                    r="4"
+                    fill="currentColor"
+                  />
+                </svg>
+              {:else}
+                <svg
+                  class="h-3.5 w-3.5 text-muted-foreground/50"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <circle cx="12" cy="12" r="10" />
+                </svg>
+              {/if}
+            </span>
+            <div class="flex-1 text-left">
+              <p class="font-medium text-xs">{t("auth_appApiKey")}</p>
+              {#if authOverview.app_has_credentials}
+                <p class="text-[10px] text-emerald-500">
+                  <span
+                    class="inline-block h-1 w-1 rounded-full bg-emerald-500 mr-0.5 align-middle"
+                  ></span>
+                  {t("auth_loggedIn")}
                 </p>
-                {#if authOverview.app_has_credentials}
-                  <p class="text-[10px] text-emerald-500">
-                    <span
-                      class="inline-block h-1 w-1 rounded-full bg-emerald-500 mr-0.5 align-middle"
-                    ></span>
-                    {t("auth_loggedIn")}
-                  </p>
-                {:else}
-                  <p class="text-[10px] text-amber-500">
-                    <span class="inline-block h-1 w-1 rounded-full bg-amber-500 mr-0.5 align-middle"
-                    ></span>
-                    {t("prompt_noPlatformKey")}
-                  </p>
-                {/if}
-              </div>
-            </button>
-
-            <!-- Platform sublist (expanded when api mode is active) -->
-            {#if authOverview.auth_mode === "api"}
-              <div class="pl-8 pb-2 space-y-0.5">
-                {#each groupedPlatforms as group}
-                  <p
-                    class="px-1 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
-                  >
-                    {group.label}
-                  </p>
-                  {#each group.items as platform}
-                    {@const isLocal = platform.category === "local"}
-                    {@const lps = isLocal ? localProxyStatuses?.[platform.id] : undefined}
-                    {@const hasCred = !!findCredential(platformCredentials, platform.id)?.api_key}
-                    {@const isSelected = platform.id === platformId}
-                    <button
-                      class="flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs hover:bg-accent/70 transition-colors"
-                      onclick={() => selectPlatform(platform.id)}
-                    >
-                      <span
-                        class="inline-block h-1 w-1 rounded-full shrink-0 {isLocal
-                          ? lps?.running && !lps.needsAuth
-                            ? 'bg-emerald-500'
-                            : lps?.running && lps.needsAuth
-                              ? 'bg-amber-500'
-                              : 'bg-muted-foreground/30'
-                          : hasCred
-                            ? 'bg-emerald-500'
-                            : 'bg-muted-foreground/30'}"
-                      ></span>
-                      <span
-                        class="flex-1 min-w-0 text-left truncate {isSelected
-                          ? 'font-medium text-foreground'
-                          : 'text-foreground/80'}">{platform.name}</span
-                      >
-                      {#if isSelected}
-                        <svg
-                          class="h-3 w-3 text-primary shrink-0"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"><path d="M20 6 9 17l-5-5" /></svg
-                        >
-                      {/if}
-                    </button>
-                  {/each}
-                {/each}
-              </div>
-            {/if}
-          </div>
+              {:else}
+                <p class="text-[10px] text-amber-500">
+                  <span class="inline-block h-1 w-1 rounded-full bg-amber-500 mr-0.5 align-middle"
+                  ></span>
+                  {t("prompt_noPlatformKey")}
+                </p>
+              {/if}
+            </div>
+          </button>
 
           <!-- Configure link -->
           <button

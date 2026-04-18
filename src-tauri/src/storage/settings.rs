@@ -306,6 +306,17 @@ fn migrate_platform_credentials(settings: &mut AllSettings) -> bool {
                 }
             }
         }
+
+        // Migrate protocol field: default to "anthropic" for all existing providers.
+        if cred.protocol.is_none() {
+            cred.protocol = Some("anthropic".to_string());
+            changed = true;
+        }
+        // Migrate enabled field: default to true for all existing providers.
+        if cred.enabled.is_none() {
+            cred.enabled = Some(true);
+            changed = true;
+        }
     }
 
     // If active_platform_id was "minimax" but was migrated to "minimax-cn", update it
@@ -525,6 +536,25 @@ pub fn update_user_settings(patch: serde_json::Value) -> Result<UserSettings, St
     if let Some(v) = patch.get("onboarding_completed") {
         all.user.onboarding_completed = v.as_bool().unwrap_or(false);
     }
+    // ── Local proxy fields ──
+    if let Some(v) = patch.get("proxy_port") {
+        all.user.proxy_port = if v.is_null() { None } else { v.as_u64().map(|n| n as u16) };
+    }
+    if let Some(v) = patch.get("proxy_auto_key") {
+        all.user.proxy_auto_key = v.as_str().map(|s| s.to_string());
+    }
+    if let Some(v) = patch.get("tier_opus_model") {
+        all.user.tier_opus_model = v.as_str().map(|s| s.to_string());
+        log::info!("[settings] tier_opus_model -> {:?}", all.user.tier_opus_model);
+    }
+    if let Some(v) = patch.get("tier_sonnet_model") {
+        all.user.tier_sonnet_model = v.as_str().map(|s| s.to_string());
+        log::info!("[settings] tier_sonnet_model -> {:?}", all.user.tier_sonnet_model);
+    }
+    if let Some(v) = patch.get("tier_haiku_model") {
+        all.user.tier_haiku_model = v.as_str().map(|s| s.to_string());
+        log::info!("[settings] tier_haiku_model -> {:?}", all.user.tier_haiku_model);
+    }
     all.user.updated_at = crate::models::now_iso();
     save(&all)?;
     Ok(all.user)
@@ -675,6 +705,8 @@ mod tests {
             name: None,
             models: None,
             extra_env: None,
+            protocol: None,
+            enabled: None,
         };
         let mut settings = make_settings_with_cred(cred);
         let changed = migrate_platform_credentials(&mut settings);

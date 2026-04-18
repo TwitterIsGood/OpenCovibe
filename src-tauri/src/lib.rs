@@ -4,6 +4,7 @@ pub mod hooks;
 pub mod models;
 pub mod pricing;
 pub mod process_ext;
+pub mod proxy;
 pub mod storage;
 pub mod web_server;
 
@@ -138,6 +139,7 @@ pub fn run() {
         .manage(ws_generation)
         .manage(ws_effective_bind)
         .manage(ws_warning)
+        .manage(std::sync::Arc::new(tokio::sync::Mutex::new(None::<proxy::ProxyServer>)))
         // NOTE: Currently ~60 IPC commands. If approaching 80+, consider grouping
         // into Tauri command modules or using a single dispatch command with typed payloads.
         .invoke_handler(tauri::generate_handler![
@@ -146,6 +148,7 @@ pub fn run() {
             commands::runs::start_run,
             commands::runs::stop_run,
             commands::runs::update_run_model,
+            commands::runs::update_run_tier_models,
             commands::runs::rename_run,
             commands::runs::soft_delete_runs,
             commands::runs::search_prompts,
@@ -193,6 +196,7 @@ pub fn run() {
             commands::diagnostics::detect_local_proxy,
             commands::diagnostics::test_api_connectivity,
             commands::session::start_session,
+            commands::session::hot_switch_models,
             commands::session::send_session_message,
             commands::session::stop_session,
             commands::session::send_session_control,
@@ -275,6 +279,11 @@ pub fn run() {
             commands::web_server::get_local_ip,
             commands::preview::open_preview_window,
             commands::preview::close_preview_window,
+            commands::proxy::start_proxy,
+            commands::proxy::stop_proxy,
+            commands::proxy::get_proxy_status,
+            commands::proxy::refresh_proxy_models,
+            commands::proxy::fetch_provider_models,
         ])
         .setup(move |app| {
             // Set up broadcast emitter (requires AppHandle, so must be in setup)
@@ -301,6 +310,26 @@ pub fn run() {
             // Start team file watcher for ~/.claude/teams/ and ~/.claude/tasks/
             let cancel = app.state::<CancellationToken>().inner().clone();
             hooks::team_watcher::start_team_watcher(app.handle().clone(), cancel);
+
+            // Auto-start local proxy in API mode
+            {
+                let proxy_state: std::sync::Arc<tokio::sync::Mutex<Option<proxy::ProxyServer>>> =
+                    app.state::<proxy::ProxyState>().inner().clone();
+                let settings = storage::settings::get_user_settings();
+                if settings.auth_mode == "api" {
+                    tauri::async_runtime::spawn(async move {
+                        match proxy::ProxyServer::start().await {
+                            Ok(server) => {
+                                let status = server.get_status().await;
+                                log::info!("[app] local proxy started on port {}", status.port);
+                                let mut guard = proxy_state.lock().await;
+                                *guard = Some(server);
+                            }
+                            Err(e) => log::error!("[app] local proxy failed to start: {e}"),
+                        }
+                    });
+                }
+            }
 
             // System tray — hide-to-tray on close, left-click to show
             // Non-fatal: if tray library is unavailable (e.g. some Linux desktops),
@@ -471,6 +500,14 @@ async fn graceful_shutdown_actors(app: &tauri::AppHandle) {
     use crate::agent::adapter::ActorSessionMap;
     use crate::agent::session_actor::ActorCommand;
     use crate::agent::stream::ProcessMap;
+
+    // Stop local proxy gracefully before shutting down actors
+    if let Some(proxy_state) = app.try_state::<crate::proxy::ProxyState>() {
+        if let Some(server) = proxy_state.lock().await.take() {
+            log::info!("[app] stopping local proxy");
+            server.stop().await;
+        }
+    }
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
 

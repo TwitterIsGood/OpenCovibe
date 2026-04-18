@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import type { TaskRun, McpServerInfo, CliModelInfo } from "$lib/types";
+  import type { TaskRun, McpServerInfo, CliModelInfo, ProxyStatus } from "$lib/types";
   import type { TurnUsage } from "$lib/stores/types";
   import { dbg } from "$lib/utils/debug";
   import { getCliModels } from "$lib/stores/cli-info.svelte";
@@ -58,6 +58,11 @@
     onPreviewToggle,
     previewOpen = false,
     onStatusClick,
+    proxyStatus = null,
+    tierOpus = "",
+    tierSonnet = "",
+    tierHaiku = "",
+    onTierSave,
   }: {
     run?: TaskRun | null;
     agent?: string;
@@ -107,6 +112,11 @@
     onPreviewToggle?: () => void;
     previewOpen?: boolean;
     onStatusClick?: () => void;
+    proxyStatus?: ProxyStatus | null;
+    tierOpus?: string;
+    tierSonnet?: string;
+    tierHaiku?: string;
+    onTierSave?: (opus: string, sonnet: string, haiku: string) => void;
   } = $props();
 
   $effect(() => {
@@ -202,6 +212,24 @@
     return (
       map[permissionMode] ?? { label: permissionMode, cls: "bg-foreground/10 text-foreground/60" }
     );
+  });
+
+  // ── Proxy tier mode ──
+  let useProxyTiers = $derived(proxyStatus?.running === true);
+
+  // Tier dirty tracking: local selections vs saved props
+  let localOpus = $state("");
+  let localSonnet = $state("");
+  let localHaiku = $state("");
+  let tierDirty = $derived.by(() =>
+    localOpus !== (tierOpus ?? "") || localSonnet !== (tierSonnet ?? "") || localHaiku !== (tierHaiku ?? "")
+  );
+
+  // Sync local state when props change (after save)
+  $effect(() => {
+    localOpus = tierOpus ?? "";
+    localSonnet = tierSonnet ?? "";
+    localHaiku = tierHaiku ?? "";
   });
 
   // ── Model selector dropdown ──
@@ -460,7 +488,51 @@
 
       {#if model}
         <span class="text-foreground/30">&middot;</span>
-        {#if onModelChange}
+        {#if useProxyTiers && proxyStatus}
+          <!-- Proxy tier model badges -->
+          {@const allModels = proxyStatus.models ?? []}
+          <div class="flex items-center gap-1">
+            {#each [
+              { tier: "opus", label: "Op", local: localOpus },
+              { tier: "sonnet", label: "So", local: localSonnet },
+              { tier: "haiku", label: "Ha", local: localHaiku },
+            ] as t}
+              <select
+                class="rounded border px-1 py-0 text-[11px] font-mono text-foreground/70 hover:bg-accent hover:text-foreground transition-colors cursor-pointer max-w-[140px] truncate bg-background {tierDirty ? 'border-amber-500/50' : 'border-transparent'}"
+                title="{t.label}: {t.local || '(not set)'}"
+                onchange={(e) => {
+                  const val = (e.target as HTMLSelectElement).value;
+                  if (t.tier === "opus") localOpus = val;
+                  else if (t.tier === "sonnet") localSonnet = val;
+                  else localHaiku = val;
+                }}
+              >
+                <option value="" selected={!t.local}>({t.label})</option>
+                {#each allModels as m}
+                  <option value={m.id} selected={t.local === m.id}>{m.id.length > 20 ? m.id.slice(0, 18) + '…' : m.id}</option>
+                {/each}
+              </select>
+            {/each}
+            {#if tierDirty}
+              <button
+                class="rounded px-1 py-0 text-[10px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors"
+                onclick={() => {
+                  onTierSave?.(localOpus, localSonnet, localHaiku);
+                }}
+                title={t("statusbar_tierSaveTitle")}
+              >{t("statusbar_tierSave")}</button>
+              <button
+                class="rounded px-1 py-0 text-[10px] text-foreground/40 hover:text-foreground/70 transition-colors"
+                onclick={() => {
+                  localOpus = tierOpus ?? "";
+                  localSonnet = tierSonnet ?? "";
+                  localHaiku = tierHaiku ?? "";
+                }}
+                title={t("statusbar_tierResetTitle")}
+              >{t("statusbar_tierReset")}</button>
+            {/if}
+          </div>
+        {:else if onModelChange}
           <button
             bind:this={modelBtnEl}
             class="flex items-center gap-1 shrink-0 rounded border border-transparent px-1.5 py-0.5 -my-0.5 text-foreground/80 hover:text-foreground hover:bg-accent hover:border-border transition-colors"

@@ -61,6 +61,10 @@ export interface TaskRun {
   execution_path: ExecutionPath;
   /** Unified resume identity. Undefined = not resumable. */
   conversation_ref?: ConversationRef;
+  /** Per-run proxy tier model overrides (isolated from global settings). */
+  tier_opus_model?: string;
+  tier_sonnet_model?: string;
+  tier_haiku_model?: string;
 }
 
 export interface ImportWatermark {
@@ -150,6 +154,12 @@ export interface UserSettings {
   web_server_bind?: string;
   web_server_allowed_origins?: string[];
   web_server_tunnel_url?: string;
+  // ── Local proxy fields ──
+  proxy_port?: number;
+  proxy_auto_key?: string;
+  tier_opus_model?: string;
+  tier_sonnet_model?: string;
+  tier_haiku_model?: string;
   updated_at: string;
 }
 
@@ -1330,6 +1340,8 @@ export interface PlatformPreset {
   extra_env?: Record<string, string>;
   docs_url?: string;
   setup_hint?: string;
+  /** API protocol: "anthropic" | "openai". Default: "anthropic" */
+  protocol?: "anthropic" | "openai";
 }
 
 /** Snapshot of PromptInput state for stash/restore. */
@@ -1361,6 +1373,27 @@ export interface PlatformCredential {
   name?: string;
   models?: string[];
   extra_env?: Record<string, string>;
+  /** API protocol: "anthropic" | "openai". Default: "anthropic" */
+  protocol?: "anthropic" | "openai";
+  /** Whether this provider is enabled for proxy aggregation. Default: true */
+  enabled?: boolean;
+}
+
+// ── Local Proxy types ──
+
+export interface ProxyStatus {
+  running: boolean;
+  port: number;
+  baseUrl: string;
+  autoKey: string;
+  models: ProxyModelInfo[];
+}
+
+export interface ProxyModelInfo {
+  id: string;
+  platformId: string;
+  providerName: string;
+  protocol: "anthropic" | "openai";
 }
 
 /** BTW side question streaming events (from Tauri) */

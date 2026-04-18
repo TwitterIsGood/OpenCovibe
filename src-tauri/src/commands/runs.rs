@@ -157,6 +157,21 @@ pub fn update_run_model(id: String, model: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn update_run_tier_models(
+    id: String,
+    opus: Option<String>,
+    sonnet: Option<String>,
+    haiku: Option<String>,
+) -> Result<(), String> {
+    storage::runs::update_tier_models(
+        &id,
+        opus.as_deref(),
+        sonnet.as_deref(),
+        haiku.as_deref(),
+    )
+}
+
+#[tauri::command]
 pub async fn stop_run(
     id: String,
     sessions: tauri::State<'_, ActorSessionMap>,

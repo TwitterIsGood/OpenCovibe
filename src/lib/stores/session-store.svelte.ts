@@ -1180,8 +1180,8 @@ export class SessionStore {
   // ── Actions ──
 
   /** Clear all content/display state fields. Does not touch phase, run, or agent. */
-  private _clearContentState(): void {
-    this.timeline = [];
+  private _clearContentState(opts?: { deferTimeline?: boolean }): void {
+    if (!opts?.deferTimeline) this.timeline = [];
     this.streamingText = "";
     this.thinkingText = "";
     this.thinkingStartMs = 0;
@@ -1444,14 +1444,10 @@ export class SessionStore {
       return;
     }
 
-    // Reset state for new load
+    // Mark loading phase (guards scroll/effects) but keep old content visible
+    // to prevent a blank flash while async data is fetched.
     this._setPhase("loading");
-    this._clearContentState();
-
-    if (xtermRef) {
-      xtermRef.clear();
-      xtermRef.writeText("\x1b[0m\x1b[2J\x1b[H");
-    }
+    this._clearContentState({ deferTimeline: true });
 
     try {
       this.run = await api.getRun(id);
@@ -1532,40 +1528,48 @@ export class SessionStore {
               dbg("store", "idle snapshot seq=0, skipping for full replay");
               snapshotCache.deleteSnapshot(id).catch(() => {});
               snapshotBody = null; // fall through to miss path
-            } else if (this._tryApplySnapshot(parsed)) {
-              snapshotHit = true;
-              // Align _lastSnapshotSeq to prevent unnecessary rewrite on first idle
-              this._lastSnapshotSeq = this._lastProcessedSeq;
-
-              // Fix: idle snapshot hit → phase must be "idle", not "ready"
-              if (isIdleSnap) this._setPhase("idle");
-
-              // Desktop idle: incremental catchup (no WS available)
-              if (isIdleSnap && getTransport().isDesktop()) {
-                const catchupEvents = await api.getBusEvents(id, this._lastProcessedSeq);
-                if (gen !== this._loadGen) return;
-                if (catchupEvents.length > 0) {
-                  dbg("store", "idle snapshot catchup", { count: catchupEvents.length });
-                  this.applyEventBatch(catchupEvents, { replayOnly: false });
-                  const catchupSt = this.run?.status;
-                  if (
-                    catchupSt === "idle" ||
-                    catchupSt === "completed" ||
-                    catchupSt === "failed" ||
-                    catchupSt === "stopped"
-                  ) {
-                    this._saveSnapshotToIdb(id);
-                  }
-                }
-              } else if (isIdleSnap) {
-                this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
-              }
-              // Terminal: no catchup needed, just subscribe for WS if applicable
-              if (!isIdleSnap) {
-                this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
-              }
             } else {
-              snapshotBody = null; // shape validation failed
+              // Swap old content for snapshot data
+              if (xtermRef) {
+                xtermRef.clear();
+                xtermRef.writeText("\x1b[0m\x1b[2J\x1b[H");
+              }
+              this.timeline = [];
+              if (this._tryApplySnapshot(parsed)) {
+                snapshotHit = true;
+                // Align _lastSnapshotSeq to prevent unnecessary rewrite on first idle
+                this._lastSnapshotSeq = this._lastProcessedSeq;
+
+                // Fix: idle snapshot hit → phase must be "idle", not "ready"
+                if (isIdleSnap) this._setPhase("idle");
+
+                // Desktop idle: incremental catchup (no WS available)
+                if (isIdleSnap && getTransport().isDesktop()) {
+                  const catchupEvents = await api.getBusEvents(id, this._lastProcessedSeq);
+                  if (gen !== this._loadGen) return;
+                  if (catchupEvents.length > 0) {
+                    dbg("store", "idle snapshot catchup", { count: catchupEvents.length });
+                    this.applyEventBatch(catchupEvents, { replayOnly: false });
+                    const catchupSt = this.run?.status;
+                    if (
+                      catchupSt === "idle" ||
+                      catchupSt === "completed" ||
+                      catchupSt === "failed" ||
+                      catchupSt === "stopped"
+                    ) {
+                      this._saveSnapshotToIdb(id);
+                    }
+                  }
+                } else if (isIdleSnap) {
+                  this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
+                }
+                // Terminal: no catchup needed, just subscribe for WS if applicable
+                if (!isIdleSnap) {
+                  this._wsSubscribeWithSeq(id, this._lastProcessedSeq);
+                }
+              } else {
+                snapshotBody = null; // shape validation failed
+              }
             }
           }
         }
@@ -1577,6 +1581,12 @@ export class SessionStore {
             dbg("store", "stale after getBusEvents, gen=", gen);
             return;
           }
+          // Swap old content for new data in one synchronous block
+          if (xtermRef) {
+            xtermRef.clear();
+            xtermRef.writeText("\x1b[0m\x1b[2J\x1b[H");
+          }
+          this.timeline = [];
           reducerMs = this.applyEventBatch(busEvents, { replayOnly: isTerminal });
           this._wsSubscribeAfterLoad(id, busEvents);
           // Write guard: distinguish "legit empty session" from "reducer anomaly"
@@ -1600,6 +1610,12 @@ export class SessionStore {
           dbg("store", "stale after getRunEvents, gen=", gen);
           return;
         }
+        // Swap old content for CLI history
+        if (xtermRef) {
+          xtermRef.clear();
+          xtermRef.writeText("\x1b[0m\x1b[2J\x1b[H");
+        }
+        this.timeline = [];
         let hasHistory = false;
         for (const event of events) {
           const text = String(

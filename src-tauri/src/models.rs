@@ -188,6 +188,13 @@ pub struct TaskRun {
     /// Resolved conversation identity (None = not resumable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_ref: Option<ConversationRef>,
+    /// Per-run proxy tier model overrides (isolated from global settings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_opus_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_sonnet_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_haiku_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +268,22 @@ pub struct UserSettings {
     pub web_server_allowed_origins: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_server_tunnel_url: Option<String>,
+    // ── Local proxy fields ──
+    /// Persisted proxy port (re-use across restarts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_port: Option<u16>,
+    /// Auto-generated proxy auth key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_auto_key: Option<String>,
+    /// Selected model name for the opus tier (from aggregated proxy model list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_opus_model: Option<String>,
+    /// Selected model name for the sonnet tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_sonnet_model: Option<String>,
+    /// Selected model name for the haiku tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_haiku_model: Option<String>,
     pub updated_at: String,
 }
 
@@ -320,6 +343,12 @@ pub struct PlatformCredential {
     pub models: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_env: Option<HashMap<String, String>>,
+    /// API protocol: "anthropic" | "openai". Default: "anthropic".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// Whether this provider is enabled for proxy aggregation. Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 impl Default for UserSettings {
@@ -349,6 +378,11 @@ impl Default for UserSettings {
             web_server_bind: None,
             web_server_allowed_origins: None,
             web_server_tunnel_url: None,
+            proxy_port: None,
+            proxy_auto_key: None,
+            tier_opus_model: None,
+            tier_sonnet_model: None,
+            tier_haiku_model: None,
             updated_at: now_iso(),
         }
     }
@@ -515,6 +549,13 @@ pub struct RunMeta {
     /// Unified resume identity. None = not resumable. Written by runtime events (session_init / thread.started).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_ref: Option<ConversationRef>,
+    /// Per-run proxy tier model overrides (isolated from global settings).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_opus_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_sonnet_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_haiku_model: Option<String>,
 }
 
 impl RunMeta {
@@ -576,6 +617,9 @@ impl RunMeta {
             no_session_persistence: self.no_session_persistence,
             execution_path: self.resolved_execution_path(),
             conversation_ref: self.resolved_conversation_ref(),
+            tier_opus_model: self.tier_opus_model.clone(),
+            tier_sonnet_model: self.tier_sonnet_model.clone(),
+            tier_haiku_model: self.tier_haiku_model.clone(),
         }
     }
 }
@@ -1815,4 +1859,49 @@ pub struct RunSearchResponse {
     pub results: Vec<RunSearchResult>,
     pub facets: RunSearchFacets,
     pub total_matching: usize,
+}
+
+// ────────────────────────────────────────────────────────
+// Local Proxy types
+// ────────────────────────────────────────────────────────
+
+/// A single provider entry used by the local proxy for routing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyProvider {
+    pub platform_id: String,
+    pub base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// "anthropic" | "openai"
+    pub protocol: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Proxy status returned to the frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStatus {
+    pub running: bool,
+    pub port: u16,
+    pub base_url: String,
+    pub auto_key: String,
+    pub models: Vec<ProxyModelInfo>,
+}
+
+/// A model entry in the proxy's aggregated model list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyModelInfo {
+    pub id: String,
+    pub platform_id: String,
+    pub provider_name: String,
+    pub protocol: String,
 }

@@ -133,7 +133,7 @@ pub(crate) fn resolve_model_tiers(models: &[String]) -> Vec<(&'static str, Strin
             (opus, sonnet, haiku)
         }
     };
-    log::debug!(
+    log::info!(
         "[session] resolve_model_tiers: opus={}, sonnet={}, haiku={}",
         opus,
         sonnet,
@@ -479,6 +479,46 @@ fn resolve_auth_env_for_platform(
     resolve_auth_env(remote, settings)
 }
 
+/// When the local proxy is configured (proxy_auto_key present) and auth_mode is "api",
+/// override the resolved auth to point at the local proxy instead of the direct provider.
+/// The proxy handles routing to the correct provider based on model name.
+fn inject_proxy_if_active(mut resolved: ResolvedAuth, settings: &UserSettings) -> ResolvedAuth {
+    // Only activate in API mode with proxy configured
+    if settings.auth_mode != "api" {
+        return resolved;
+    }
+    let port = match settings.proxy_port {
+        Some(p) if p > 0 => p,
+        _ => return resolved,
+    };
+    let auto_key = match &settings.proxy_auto_key {
+        Some(k) if !k.is_empty() => k.clone(),
+        _ => return resolved,
+    };
+
+    log::info!(
+        "[session] proxy active: overriding base_url to 127.0.0.1:{}, model tiers from settings",
+        port
+    );
+
+    resolved.api_key = None;
+    resolved.auth_token = Some(auto_key);
+    resolved.base_url = Some(format!("http://127.0.0.1:{port}"));
+
+    // Use tier model selections from settings, or default to common model names
+    let opus = settings.tier_opus_model.clone().unwrap_or_else(|| "claude-opus-4-20250514".to_string());
+    let sonnet = settings.tier_sonnet_model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+    let haiku = settings.tier_haiku_model.clone().unwrap_or_else(|| "claude-haiku-4-5-20251001".to_string());
+    log::info!(
+        "[session] proxy tier models: opus='{}' sonnet='{}' haiku='{}'",
+        opus, sonnet, haiku
+    );
+    resolved.models = Some(vec![opus, sonnet, haiku]);
+    resolved.extra_env = None;
+
+    resolved
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_session_impl(
     emitter: &Arc<BroadcastEmitter>,
@@ -538,12 +578,25 @@ pub(crate) async fn start_session_impl(
         platform_id.as_deref().or(meta.platform_id.as_deref())
     };
     let resolved = resolve_auth_env_for_platform(&remote, &user_settings, effective_pid);
+    // When proxy is configured in API mode, override resolved auth with proxy settings
+    let resolved = inject_proxy_if_active(resolved, &user_settings);
     adapter::clear_model_if_provider_overrides(
         &mut adapter_settings,
         &meta.model,
         &agent_settings.model,
         &resolved.models,
     );
+    // When proxy is active, --model flag overrides --settings env vars at the CLI level.
+    // Clear it so ANTHROPIC_MODEL from --settings takes effect.
+    if resolved.base_url.as_deref().map_or(false, |u| u.starts_with("http://127.0.0.1")) {
+        if adapter_settings.model.is_some() {
+            log::info!(
+                "[session] proxy active: clearing --model flag '{}' to let --settings ANTHROPIC_MODEL take effect",
+                adapter_settings.model.as_deref().unwrap_or("")
+            );
+            adapter_settings.model = None;
+        }
+    }
     let resolved = augment_with_shell_auth(
         resolved,
         &user_settings.auth_mode,
@@ -588,7 +641,9 @@ pub(crate) async fn start_session_impl(
 
     // Preflight: check base_url reachability
     // Skip for SSH remote — reachability depends on remote host's network
-    if remote.is_none() {
+    // Skip when proxy is active — the local proxy handles provider reachability
+    let proxy_active = resolved.base_url.as_deref().map_or(false, |u| u.starts_with("http://127.0.0.1"));
+    if remote.is_none() && !proxy_active {
         if let Err(e) = preflight_check_base_url(resolved.base_url.as_deref(), effective_pid).await
         {
             // Only mark as Failed for new runs still in Pending — don't overwrite history
@@ -671,6 +726,19 @@ pub(crate) async fn start_session_impl(
     let cmd_tx = actor_handle.cmd_tx.clone();
     sessions.lock().await.insert(run_id.clone(), actor_handle);
 
+    // 8b. Persist tier models to run meta for per-conversation isolation.
+    // Only write if the run doesn't already have tier models (first start).
+    // Hot-switch updates are handled by the frontend's saveTierModels().
+    if is_new || meta.tier_opus_model.is_none() && meta.tier_sonnet_model.is_none() && meta.tier_haiku_model.is_none() {
+        let opus = user_settings.tier_opus_model.as_deref();
+        let sonnet = user_settings.tier_sonnet_model.as_deref();
+        let haiku = user_settings.tier_haiku_model.as_deref();
+        if opus.is_some() || sonnet.is_some() || haiku.is_some() {
+            log::info!("[session] saving tier models to run meta: id={}, opus={:?}, sonnet={:?}, haiku={:?}", run_id, opus, sonnet, haiku);
+            storage::runs::update_tier_models(&run_id, opus, sonnet, haiku).ok();
+        }
+    }
+
     // 9. Send initial message through actor (unified entry point for Turn Engine)
     let initial_text = if is_new {
         Some(meta.prompt.clone())
@@ -735,6 +803,7 @@ pub async fn start_session(
     sessions: State<'_, ActorSessionMap>,
     spawn_locks: State<'_, SpawnLocks>,
     cancel_token: State<'_, CancellationToken>,
+    proxy_state: State<'_, crate::proxy::ProxyState>,
     run_id: String,
     mode: Option<SessionMode>,
     session_id: Option<String>,
@@ -742,6 +811,26 @@ pub async fn start_session(
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
 ) -> Result<(), String> {
+    // Ensure proxy is running in API mode
+    let settings = storage::settings::get_user_settings();
+    if settings.auth_mode == "api" {
+        let mut guard = proxy_state.inner().lock().await;
+        if guard.is_none() {
+            log::info!("[session] proxy not running, starting for API mode session");
+            match crate::proxy::ProxyServer::start().await {
+                Ok(server) => {
+                    let status = server.get_status().await;
+                    log::info!("[session] proxy started on port {}", status.port);
+                    *guard = Some(server);
+                }
+                Err(e) => {
+                    log::error!("[session] proxy start failed: {e}");
+                    return Err(format!("Local proxy failed to start: {e}"));
+                }
+            }
+        }
+    }
+
     start_session_impl(
         emitter.inner(),
         sessions.inner(),
@@ -753,6 +842,52 @@ pub async fn start_session(
         initial_message,
         attachments,
         platform_id,
+    )
+    .await
+}
+
+/// Kill the current CLI process and respawn with updated `--settings` + `--resume`.
+/// Used for hot model switching when tier models change mid-conversation.
+#[tauri::command]
+pub async fn hot_switch_models(
+    emitter: State<'_, Arc<BroadcastEmitter>>,
+    sessions: State<'_, ActorSessionMap>,
+    spawn_locks: State<'_, SpawnLocks>,
+    cancel_token: State<'_, CancellationToken>,
+    run_id: String,
+) -> Result<(), String> {
+    log::info!("[session] hot_switch_models: run_id={}", run_id);
+
+    // 1. Stop current actor (kills CLI process)
+    let stopped = stop_actor(sessions.inner(), &run_id).await?;
+    if !stopped {
+        log::warn!("[session] hot_switch_models: no active actor for run_id={}", run_id);
+        return Err("No active session to switch".to_string());
+    }
+
+    // 2. Read run metadata for session_id and platform_id
+    let meta = storage::runs::get_run(&run_id)
+        .ok_or_else(|| format!("Run {} not found", run_id))?;
+    let session_id = meta.session_id.clone()
+        .ok_or("No session_id — cannot resume after hot switch")?;
+
+    log::info!(
+        "[session] hot_switch_models: respawning run_id={} with session_id={}, platform_id={:?}",
+        run_id, session_id, meta.platform_id
+    );
+
+    // 3. Resume session — start_session_impl reads fresh settings (with updated tier models)
+    start_session_impl(
+        emitter.inner(),
+        sessions.inner(),
+        spawn_locks.inner(),
+        cancel_token.inner(),
+        run_id,
+        Some(SessionMode::Resume),
+        Some(session_id),
+        None,
+        None,
+        meta.platform_id.clone(),
     )
     .await
 }
@@ -1799,6 +1934,28 @@ async fn spawn_cli_process(
             }
         }
 
+        // When proxy is active (auth_token + base_url pointing to localhost),
+        // inject --settings flag with model tier env vars for reliable CLI detection.
+        // MyWorkPanel confirmed: "Pure process env vars are NOT sufficient; only --settings works."
+        let is_proxy_active = base_url
+            .as_ref()
+            .is_some_and(|u| u.starts_with("http://127.0.0.1") || u.starts_with("http://localhost"));
+        if is_proxy_active {
+            if let (Some(token), Some(url), Some(m)) = (auth_token, base_url, models) {
+                let tiers = resolve_model_tiers(m);
+                let mut settings_env = serde_json::Map::new();
+                for (k, v) in &tiers {
+                    settings_env.insert(k.to_string(), serde_json::Value::String(v.to_string()));
+                }
+                settings_env.insert("ANTHROPIC_BASE_URL".to_string(), serde_json::Value::String(url.to_string()));
+                settings_env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), serde_json::Value::String(token.to_string()));
+                let settings_json = serde_json::json!({ "env": settings_env });
+                let settings_str = serde_json::to_string(&settings_json).unwrap_or_default();
+                log::info!("[session] injecting --settings for proxy: {}", settings_str);
+                cmd.arg("--settings").arg(settings_str);
+            }
+        }
+
         cmd.hide_console().kill_on_drop(true).spawn().map_err(|e| {
             log::error!("[session] Failed to spawn claude: {}", e);
             format!("Failed to spawn claude: {}", e)
@@ -2192,6 +2349,8 @@ mod tests {
             name: None,
             models: None,
             extra_env: None,
+            protocol: None,
+            enabled: None,
         }
     }
 

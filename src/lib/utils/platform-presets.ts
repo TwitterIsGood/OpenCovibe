@@ -236,6 +236,7 @@ export function buildPlatformList(
       category: "custom" as const,
       models: c.models,
       extra_env: c.extra_env,
+      protocol: c.protocol,
     }));
   return [...builtins, ...customs];
 }

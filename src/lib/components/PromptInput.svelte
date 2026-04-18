@@ -90,15 +90,11 @@
     onFastModeSwitch,
     cwd = "/",
     authMode = "cli",
-    platformId = "anthropic",
-    platformCredentials = [],
-    onPlatformChange,
     authOverview = null,
     authSourceLabel = "",
     authSourceCategory = "unknown",
     apiKeySource = "",
     onAuthModeChange,
-    localProxyStatuses = {} as Record<string, { running: boolean; needsAuth: boolean }>,
     availableSkills = [],
     skillItems = [],
     agents = [],
@@ -133,15 +129,11 @@
     onFastModeSwitch?: (mode: "on" | "off") => void;
     cwd?: string;
     authMode?: string;
-    platformId?: string;
-    platformCredentials?: PlatformCredential[];
-    onPlatformChange?: (platformId: string) => void;
     authOverview?: AuthOverview | null;
     authSourceLabel?: string;
     authSourceCategory?: string;
     apiKeySource?: string;
     onAuthModeChange?: (mode: string) => void;
-    localProxyStatuses?: Record<string, { running: boolean; needsAuth: boolean }>;
     availableSkills?: string[];
     skillItems?: { name: string; description: string }[];
     agents?: { name: string; description: string }[];
@@ -2101,11 +2093,7 @@
             {apiKeySource}
             {hasRun}
             {authMode}
-            {platformCredentials}
-            {platformId}
             {onAuthModeChange}
-            {onPlatformChange}
-            {localProxyStatuses}
           />
         {/if}
         <SkillSelector

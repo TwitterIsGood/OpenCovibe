@@ -122,6 +122,14 @@
   let localProxyChecking = $state(false);
   let localProxyRequestId = $state(0);
   let localAdvancedOpen = $state(false);
+
+  // ── Local proxy state ──
+  let proxyStatus = $state<import("$lib/types").ProxyStatus | null>(null);
+  let proxyLoading = $state(false);
+  let providerFetchLoading = $state<Record<string, boolean>>({});
+  let tierOpus = $state("");
+  let tierSonnet = $state("");
+  let tierHaiku = $state("");
   let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
 
   // ── API connectivity test state ──
@@ -1112,6 +1120,12 @@
           settings.active_platform_id,
         );
         loadFieldsFromCredential(selectedPlatformId);
+        // Load tier model selections
+        tierOpus = settings.tier_opus_model ?? "";
+        tierSonnet = settings.tier_sonnet_model ?? "";
+        tierHaiku = settings.tier_haiku_model ?? "";
+        // Load proxy status
+        api.getProxyStatus().then((ps) => (proxyStatus = ps)).catch(() => {});
       } else {
         anthropicApiKey = settings.anthropic_api_key ?? "";
         anthropicBaseUrl = settings.anthropic_base_url ?? "";
@@ -1180,6 +1194,103 @@
     } catch (e) {
       dbgWarn("settings", "saveGeneralPatch error", e);
     }
+  }
+
+  // ── Local proxy helpers ──
+
+  async function refreshProxyStatus() {
+    try {
+      proxyStatus = await api.getProxyStatus();
+    } catch {
+      proxyStatus = null;
+    }
+  }
+
+  async function handleStartProxy() {
+    proxyLoading = true;
+    try {
+      proxyStatus = await api.startProxy();
+    } catch (e) {
+      dbgWarn("settings", "startProxy error", e);
+    } finally {
+      proxyLoading = false;
+    }
+  }
+
+  async function handleStopProxy() {
+    proxyLoading = true;
+    try {
+      await api.stopProxy();
+      proxyStatus = null;
+    } catch (e) {
+      dbgWarn("settings", "stopProxy error", e);
+    } finally {
+      proxyLoading = false;
+    }
+  }
+
+  async function handleRefreshModels() {
+    proxyLoading = true;
+    try {
+      const models = await api.refreshProxyModels();
+      if (proxyStatus) proxyStatus.models = models;
+    } catch (e) {
+      dbgWarn("settings", "refreshProxyModels error", e);
+    } finally {
+      proxyLoading = false;
+    }
+  }
+
+  async function handleFetchProviderModels(platformId: string) {
+    providerFetchLoading[platformId] = true;
+    try {
+      const models = await api.fetchProviderModels(platformId);
+      // Update the credential's models
+      const cred = findCredential(platformCredentials, platformId);
+      if (cred) {
+        cred.models = models;
+      } else {
+        // Create minimal credential if not exists
+        platformCredentials.push({ platform_id: platformId, models });
+      }
+      syncAndSave(platformId);
+    } catch (e) {
+      dbgWarn("settings", "fetchProviderModels error", e);
+    } finally {
+      providerFetchLoading[platformId] = false;
+    }
+  }
+
+  async function handleAddManualModel(platformId: string, model: string) {
+    const trimmed = model.trim();
+    if (!trimmed) return;
+    const cred = findCredential(platformCredentials, platformId);
+    if (cred) {
+      const existing = cred.models ?? [];
+      if (!existing.includes(trimmed)) {
+        cred.models = [...existing, trimmed];
+      }
+    } else {
+      platformCredentials.push({ platform_id: platformId, models: [trimmed] });
+    }
+    syncAndSave(platformId);
+  }
+
+  function handleRemoveModel(platformId: string, model: string) {
+    const cred = findCredential(platformCredentials, platformId);
+    if (cred?.models) {
+      cred.models = cred.models.filter((m) => m !== model);
+      if (cred.models.length === 0) cred.models = undefined;
+    }
+    syncAndSave(platformId);
+  }
+
+  async function saveTierModels() {
+    await saveGeneralPatch({
+      tier_opus_model: tierOpus || undefined,
+      tier_sonnet_model: tierSonnet || undefined,
+      tier_haiku_model: tierHaiku || undefined,
+    });
   }
 
   // ── Web Server helpers ──
@@ -2089,6 +2200,95 @@
                 <h3 class="text-sm font-medium mb-1">{t("settings_auth_appApiKeyTitle")}</h3>
                 <p class="text-xs text-muted-foreground mb-3">{t("settings_auth_appApiKeyDesc")}</p>
               </div>
+
+              <!-- Proxy status & tier model selection -->
+              <div class="rounded-md border border-border/50 p-3 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full {proxyStatus?.running ? 'bg-green-500' : 'bg-muted-foreground/30'}"></span>
+                    <span class="text-sm font-medium">Local Proxy</span>
+                    {#if proxyStatus?.running}
+                      <span class="text-[10px] text-muted-foreground font-mono">:{proxyStatus.port}</span>
+                    {/if}
+                  </div>
+                  <div class="flex gap-1.5">
+                    {#if proxyStatus?.running}
+                      <button
+                        class="rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
+                        disabled={proxyLoading}
+                        onclick={handleRefreshModels}
+                      >
+                        Refresh Models
+                      </button>
+                      <button
+                        class="rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:text-destructive hover:border-destructive/50"
+                        disabled={proxyLoading}
+                        onclick={handleStopProxy}
+                      >
+                        Stop
+                      </button>
+                    {:else}
+                      <button
+                        class="rounded-md border px-2 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-50"
+                        disabled={proxyLoading}
+                        onclick={handleStartProxy}
+                      >
+                        Start Proxy
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+
+                {#if proxyStatus?.running}
+                  <!-- Tier model selectors: 3 dropdowns for opus/sonnet/haiku -->
+                  {@const allModels = proxyStatus.models ?? []}
+                  <div class="space-y-2">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right">Opus</span>
+                      <select
+                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
+                        bind:value={tierOpus}
+                        onchange={() => saveTierModels()}
+                      >
+                        <option value="">(not set)</option>
+                        {#each allModels as m}
+                          <option value={m.id}>{m.id} ({m.providerName})</option>
+                        {/each}
+                      </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right font-medium">Sonnet</span>
+                      <select
+                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
+                        bind:value={tierSonnet}
+                        onchange={() => saveTierModels()}
+                      >
+                        <option value="">(not set)</option>
+                        {#each allModels as m}
+                          <option value={m.id}>{m.id} ({m.providerName})</option>
+                        {/each}
+                      </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right">Haiku</span>
+                      <select
+                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
+                        bind:value={tierHaiku}
+                        onchange={() => saveTierModels()}
+                      >
+                        <option value="">(not set)</option>
+                        {#each allModels as m}
+                          <option value={m.id}>{m.id} ({m.providerName})</option>
+                        {/each}
+                      </select>
+                    </div>
+                  </div>
+                  {#if allModels.length === 0}
+                    <p class="text-[11px] text-amber-500">No models available. Configure providers below and fetch their models.</p>
+                  {/if}
+                {/if}
+              </div>
+
               <!-- Platform selector -->
               <div>
                 <span class="text-sm font-medium mb-1.5 block"
@@ -2454,56 +2654,98 @@
                   </p>
                 </div>
 
-                <!-- Models (3-tier: Opus / Sonnet / Haiku) -->
-                {@const [presetOpus, presetSonnet, presetHaiku] = expandModelsToTiers(
-                  selectedPlatform?.models,
-                )}
-                {@const phOpus = presetOpus || t("settings_general_modelsPlaceholder")}
-                {@const phSonnet = presetSonnet || t("settings_general_modelsPlaceholder")}
-                {@const phHaiku = presetHaiku || t("settings_general_modelsPlaceholder")}
+                <!-- Protocol selector -->
                 <div>
-                  <label class="text-sm font-medium mb-1.5 block"
-                    >{t("settings_general_models")}</label
-                  >
-                  <div class="mt-1 space-y-1.5">
-                    <div class="flex items-center gap-2">
-                      <span class="text-xs text-muted-foreground w-24 shrink-0 text-right"
-                        >{t("settings_general_modelOpus")}</span
-                      >
-                      <Input
-                        bind:value={modelOpus}
-                        placeholder={phOpus}
-                        class="flex-1 font-mono text-xs"
-                        onblur={() => persistCurrentPlatform()}
-                      />
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span
-                        class="text-xs text-muted-foreground w-24 shrink-0 text-right font-medium"
-                        >{t("settings_general_modelSonnet")}</span
-                      >
-                      <Input
-                        bind:value={modelSonnet}
-                        placeholder={phSonnet}
-                        class="flex-1 font-mono text-xs"
-                        onblur={() => persistCurrentPlatform()}
-                      />
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-xs text-muted-foreground w-24 shrink-0 text-right"
-                        >{t("settings_general_modelHaiku")}</span
-                      >
-                      <Input
-                        bind:value={modelHaiku}
-                        placeholder={phHaiku}
-                        class="flex-1 font-mono text-xs"
-                        onblur={() => persistCurrentPlatform()}
-                      />
-                    </div>
+                  <label class="text-sm font-medium mb-1.5 block">Protocol</label>
+                  <div class="mt-1 flex gap-2">
+                    <button
+                      class="flex-1 rounded-md border px-3 py-2 text-xs transition-colors {(findCredential(platformCredentials, selectedPlatformId ?? "")?.protocol ?? selectedPlatform?.protocol ?? "anthropic") === "anthropic"
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'hover:bg-accent'}"
+                      onclick={() => {
+                        const cred = findCredential(platformCredentials, selectedPlatformId ?? "");
+                        if (cred) { cred.protocol = "anthropic"; syncAndSave(selectedPlatformId!); }
+                      }}
+                    >
+                      Anthropic API
+                    </button>
+                    <button
+                      class="flex-1 rounded-md border px-3 py-2 text-xs transition-colors {(findCredential(platformCredentials, selectedPlatformId ?? "")?.protocol ?? selectedPlatform?.protocol ?? "anthropic") === "openai"
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'hover:bg-accent'}"
+                      onclick={() => {
+                        const cred = findCredential(platformCredentials, selectedPlatformId ?? "");
+                        if (cred) { cred.protocol = "openai"; syncAndSave(selectedPlatformId!); }
+                      }}
+                    >
+                      OpenAI API
+                    </button>
                   </div>
                   <p class="mt-1 text-xs text-muted-foreground">
-                    {t("settings_general_modelsHelp")}
+                    API protocol for this provider. Most providers use Anthropic-compatible endpoints.
                   </p>
+                </div>
+
+                <!-- Model management: fetch from API + manual add -->
+                {@const cred = findCredential(platformCredentials, selectedPlatformId ?? "")}
+                {@const providerModels = cred?.models ?? []}
+                {@const fetchLoading = providerFetchLoading[selectedPlatformId ?? ""]}
+                <div>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <label class="text-sm font-medium">Models</label>
+                    <div class="flex gap-1.5">
+                      <button
+                        class="rounded-md border px-2.5 py-1 text-[11px] transition-colors text-muted-foreground hover:bg-accent disabled:opacity-50"
+                        disabled={fetchLoading || !anthropicApiKey}
+                        onclick={() => selectedPlatformId && handleFetchProviderModels(selectedPlatformId)}
+                        title={!anthropicApiKey ? "API key required" : "Fetch models from /v1/models"}
+                      >
+                        {#if fetchLoading}
+                          <span class="flex items-center gap-1">
+                            <span class="h-2.5 w-2.5 border border-foreground/30 border-t-foreground rounded-full animate-spin"></span>
+                            Fetching...
+                          </span>
+                        {:else}
+                          Fetch Models
+                        {/if}
+                      </button>
+                    </div>
+                  </div>
+                  {#if providerModels.length > 0}
+                    <div class="mt-1 flex flex-wrap gap-1">
+                      {#each providerModels as model}
+                        <span class="inline-flex items-center gap-1 rounded-md bg-muted/60 px-2 py-0.5 text-[11px] font-mono">
+                          {model}
+                          <button
+                            class="text-muted-foreground hover:text-destructive"
+                            onclick={() => selectedPlatformId && handleRemoveModel(selectedPlatformId, model)}
+                          >
+                            <svg class="h-2.5 w-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                          </button>
+                        </span>
+                      {/each}
+                    </div>
+                  {:else}
+                    <p class="text-xs text-muted-foreground mt-1">No models configured. Fetch from API or add manually.</p>
+                  {/if}
+                  <!-- Manual model add -->
+                  {#if selectedPlatformId}
+                    <div class="mt-2 flex gap-1.5">
+                      <Input
+                        placeholder="Add model name manually..."
+                        class="flex-1 font-mono text-xs"
+                        onkeydown={(e: KeyboardEvent) => {
+                          if (e.key === "Enter") {
+                            const input = e.target as HTMLInputElement;
+                            if (input.value.trim()) {
+                              handleAddManualModel(selectedPlatformId!, input.value);
+                              input.value = "";
+                            }
+                          }
+                        }}
+                      />
+                    </div>
+                  {/if}
                 </div>
 
                 <!-- Extra Environment Variables -->

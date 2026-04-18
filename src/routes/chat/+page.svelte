@@ -134,8 +134,11 @@
   let projectCommands = $state<import("$lib/types").CliCommand[]>([]);
   /** Generation counter for reloadProjectData race guard. */
   let preloadGen = 0;
-  /** Local proxy running statuses for AuthSourceBadge. */
-  let localProxyStatuses = $state<Record<string, { running: boolean; needsAuth: boolean }>>({});
+  /** Proxy status for tier model selection in status bar. */
+  let proxyStatus = $state<import("$lib/types").ProxyStatus | null>(null);
+  let tierOpus = $state("");
+  let tierSonnet = $state("");
+  let tierHaiku = $state("");
 
   // ── Preview state ──
   let previewInstanceId = $state("");
@@ -639,6 +642,13 @@
     await store.loadRun(id, xtermRef);
     if (id) folderCwdOverride = ""; // clear folder override when a real run loads
 
+    // Restore per-run tier models from run meta
+    if (id && store.run) {
+      tierOpus = store.run.tier_opus_model ?? tierOpus;
+      tierSonnet = store.run.tier_sonnet_model ?? tierSonnet;
+      tierHaiku = store.run.tier_haiku_model ?? tierHaiku;
+    }
+
     // Reload project data with the run's cwd
     if (id && store.effectiveCwd) {
       reloadProjectData(store.effectiveCwd);
@@ -959,8 +969,17 @@
         .getAuthOverview()
         .then((ov) => (authOverview = ov))
         .catch(() => {});
-      // Detect local proxy statuses for AuthSourceBadge
-      checkAllLocalProxies();
+      // Fetch proxy status for tier model selection
+      if ((settings.auth_mode ?? "cli") === "api") {
+        try {
+          proxyStatus = await api.getProxyStatus();
+          tierOpus = settings.tier_opus_model ?? "";
+          tierSonnet = settings.tier_sonnet_model ?? "";
+          tierHaiku = settings.tier_haiku_model ?? "";
+        } catch {
+          proxyStatus = null;
+        }
+      }
     } catch (e) {
       dbgWarn("chat", "failed to load settings:", e);
     }
@@ -1987,27 +2006,6 @@
     }
   }
 
-  async function checkAllLocalProxies() {
-    const localPresets = PLATFORM_PRESETS.filter((p) => p.category === "local");
-    const results = await Promise.allSettled(
-      localPresets.map((p) => {
-        const cred = findCredential(settings?.platform_credentials ?? [], p.id);
-        const url = cred?.base_url || p.base_url;
-        return api.detectLocalProxy(p.id, url);
-      }),
-    );
-    const statuses: Record<string, { running: boolean; needsAuth: boolean }> = {};
-    results.forEach((r, i) => {
-      if (r.status === "fulfilled") {
-        statuses[localPresets[i].id] = { running: r.value.running, needsAuth: r.value.needsAuth };
-      } else {
-        statuses[localPresets[i].id] = { running: false, needsAuth: false };
-      }
-    });
-    localProxyStatuses = statuses;
-    dbg("chat", "checkAllLocalProxies", statuses);
-  }
-
   async function handlePlatformChange(platformId: string) {
     dbg("chat", "platform change", { from: store.platformId, to: platformId });
     store.platformId = platformId;
@@ -2045,8 +2043,6 @@
     } catch (e) {
       dbgWarn("chat", "failed to persist platform change", e);
     }
-    // Refresh local proxy statuses after platform switch
-    checkAllLocalProxies();
   }
 
   function appendCommandOutput(text: string) {
@@ -2061,6 +2057,34 @@
         ts: new Date().toISOString(),
       },
     ];
+  }
+
+  /** Persist proxy tier model selections. */
+  async function saveTierModels(opus: string, sonnet: string, haiku: string) {
+    tierOpus = opus;
+    tierSonnet = sonnet;
+    tierHaiku = haiku;
+    try {
+      await api.updateUserSettings({
+        tier_opus_model: opus || undefined,
+        tier_sonnet_model: sonnet || undefined,
+        tier_haiku_model: haiku || undefined,
+      } as Partial<import("$lib/types").UserSettings>);
+      if (store.run?.id) {
+        api.updateRunTierModels(store.run.id, opus || undefined, sonnet || undefined, haiku || undefined).catch(() => {});
+      }
+      dbg("chat", "tier models saved", { opus, sonnet, haiku });
+      if (store.sessionAlive && store.run?.id && proxyStatus?.running) {
+        dbg("chat", "triggering hot switch for tier model change", { runId: store.run.id });
+        try {
+          await api.hotSwitchModels(store.run.id);
+        } catch (e) {
+          dbgWarn("chat", "hot switch failed", e);
+        }
+      }
+    } catch (e) {
+      dbgWarn("chat", "failed to save tier models", e);
+    }
   }
 
   async function handleRename(name: string) {
@@ -3492,6 +3516,11 @@
       authSourceLabel={store.authSourceLabel}
       authSourceCategory={store.authSourceCategory}
       apiKeySource={store.apiKeySource}
+      {proxyStatus}
+      {tierOpus}
+      {tierSonnet}
+      {tierHaiku}
+      onTierSave={saveTierModels}
       {previewOpen}
       onPreviewToggle={() => {
         if (previewOpen && !previewUrlBarOpen) {
@@ -3676,11 +3705,7 @@
                     apiKeySource={store.apiKeySource}
                     hasRun={false}
                     authMode={store.authMode}
-                    platformCredentials={settings?.platform_credentials ?? []}
-                    platformId={store.platformId ?? "anthropic"}
                     onAuthModeChange={handleAuthModeChange}
-                    onPlatformChange={handlePlatformChange}
-                    {localProxyStatuses}
                     variant="hero"
                   />
                   <span class="text-muted-foreground">·</span>
@@ -4535,7 +4560,6 @@
         authSourceCategory={store.authSourceCategory}
         apiKeySource={store.apiKeySource}
         onAuthModeChange={handleAuthModeChange}
-        {localProxyStatuses}
         showAuthBadge={!welcomeVisible}
         onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
         availableSkills={store.availableSkills}

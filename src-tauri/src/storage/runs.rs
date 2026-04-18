@@ -113,6 +113,9 @@ pub fn create_run(
         no_session_persistence,
         execution_path: None,   // Caller sets after create_run
         conversation_ref: None, // Written by runtime events (session_init / thread.started)
+        tier_opus_model: None,
+        tier_sonnet_model: None,
+        tier_haiku_model: None,
     };
 
     save_meta(&meta)?;
@@ -219,6 +222,24 @@ pub fn update_run_model(id: &str, model: &str) -> Result<(), String> {
     );
     with_meta(id, |meta| {
         meta.model = Some(model.to_string());
+        Ok(())
+    })
+}
+
+pub fn update_tier_models(
+    id: &str,
+    opus: Option<&str>,
+    sonnet: Option<&str>,
+    haiku: Option<&str>,
+) -> Result<(), String> {
+    log::info!(
+        "[storage/runs] update_tier_models: id={}, opus={:?}, sonnet={:?}, haiku={:?}",
+        id, opus, sonnet, haiku
+    );
+    with_meta(id, |meta| {
+        meta.tier_opus_model = opus.map(|s| s.to_string());
+        meta.tier_sonnet_model = sonnet.map(|s| s.to_string());
+        meta.tier_haiku_model = haiku.map(|s| s.to_string());
         Ok(())
     })
 }

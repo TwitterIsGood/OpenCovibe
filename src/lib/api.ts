@@ -107,6 +107,16 @@ export async function updateRunModel(id: string, model: string): Promise<void> {
   return invoke<void>("update_run_model", { id, model });
 }
 
+export async function updateRunTierModels(
+  id: string,
+  opus?: string,
+  sonnet?: string,
+  haiku?: string,
+): Promise<void> {
+  dbg("api", "updateRunTierModels", { id, opus, sonnet, haiku });
+  return invoke<void>("update_run_tier_models", { id, opus: opus || null, sonnet: sonnet || null, haiku: haiku || null });
+}
+
 export async function softDeleteRuns(ids: string[]): Promise<number> {
   dbg("api", "softDeleteRuns", { ids });
   return invoke<number>("soft_delete_runs", { ids });
@@ -392,6 +402,34 @@ export async function testApiConnectivity(
     authEnvVar,
     model,
   });
+}
+
+// ── Local Proxy ──
+
+export async function startProxy(): Promise<import("./types").ProxyStatus> {
+  return invoke<import("./types").ProxyStatus>("start_proxy");
+}
+
+export async function stopProxy(): Promise<void> {
+  return invoke<void>("stop_proxy");
+}
+
+export async function getProxyStatus(): Promise<import("./types").ProxyStatus> {
+  return invoke<import("./types").ProxyStatus>("get_proxy_status");
+}
+
+export async function refreshProxyModels(): Promise<import("./types").ProxyModelInfo[]> {
+  return invoke<import("./types").ProxyModelInfo[]>("refresh_proxy_models");
+}
+
+export async function fetchProviderModels(
+  platformId: string,
+): Promise<string[]> {
+  return invoke<string[]>("fetch_provider_models", { platformId });
+}
+
+export async function hotSwitchModels(runId: string): Promise<void> {
+  return invoke<void>("hot_switch_models", { runId });
 }
 
 export async function runDiagnostics(cwd: string): Promise<DiagnosticsReport> {

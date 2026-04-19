@@ -531,6 +531,7 @@ pub(crate) async fn start_session_impl(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     let _guard = spawn_locks.acquire(&run_id).await;
     let session_mode = mode.unwrap_or_default();
@@ -567,6 +568,16 @@ pub(crate) async fn start_session_impl(
     let user_settings = storage::settings::get_user_settings();
     let mut adapter_settings =
         adapter::build_adapter_settings(&agent_settings, &user_settings, meta.model.clone());
+
+    // Apply session-scoped permission_mode override (e.g. ExitPlanMode → acceptEdits).
+    // Does not touch persisted settings — only affects this CLI spawn.
+    if let Some(ref mode) = permission_mode_override {
+        log::info!(
+            "[session] permission_mode override: {:?} → {:?}",
+            adapter_settings.permission_mode, mode
+        );
+        adapter_settings.permission_mode = Some(mode.clone());
+    }
 
     // 2b. Resolve remote host from RunMeta (audit #2: single truth source)
     let remote = resolve_remote_host(&meta)?;
@@ -810,6 +821,7 @@ pub async fn start_session(
     initial_message: Option<String>,
     attachments: Option<Vec<AttachmentData>>,
     platform_id: Option<String>,
+    permission_mode_override: Option<String>,
 ) -> Result<(), String> {
     // Ensure proxy is running in API mode
     let settings = storage::settings::get_user_settings();
@@ -842,6 +854,7 @@ pub async fn start_session(
         initial_message,
         attachments,
         platform_id,
+        permission_mode_override,
     )
     .await
 }
@@ -888,6 +901,7 @@ pub async fn hot_switch_models(
         None,
         None,
         meta.platform_id.clone(),
+        None,
     )
     .await
 }

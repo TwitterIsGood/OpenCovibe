@@ -1663,7 +1663,12 @@ export class SessionStore {
   }
 
   /** Create a new run and start the session. Returns the run ID. */
-  async startSession(prompt: string, cwd: string, attachments: Attachment[]): Promise<string> {
+  async startSession(
+    prompt: string,
+    cwd: string,
+    attachments: Attachment[],
+    permissionModeOverride?: string,
+  ): Promise<string> {
     this.error = "";
     this._setPhase("spawning");
 
@@ -1693,7 +1698,13 @@ export class SessionStore {
           auto: "auto",
           dont_ask: "dontAsk",
         };
-        if (freshSettings.permission_mode) {
+        if (permissionModeOverride) {
+          // Session-scoped override takes priority over persisted settings
+          if (permissionModeOverride !== this.permissionMode) {
+            this.permissionMode = permissionModeOverride;
+            this.permissionModeSetByUser = true;
+          }
+        } else if (freshSettings.permission_mode) {
           const freshPerm =
             APP_TO_CLI[freshSettings.permission_mode] ?? freshSettings.permission_mode;
           if (freshPerm !== this.permissionMode) {
@@ -1742,6 +1753,7 @@ export class SessionStore {
           undefined,
           backendAtt,
           this.platformId || undefined,
+          permissionModeOverride,
         );
         dbg("store", "startSession resolved");
         // phase will be set by run_state bus event

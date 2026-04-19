@@ -802,6 +802,10 @@ pub async fn dispatch_command(
             let attachments: Option<Vec<AttachmentData>> = params
                 .get("attachments")
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let permission_mode_override = params
+                .get("permission_mode_override")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let platform_id = params
                 .get("platform_id")
                 .and_then(|v| v.as_str())
@@ -817,6 +821,7 @@ pub async fn dispatch_command(
                 initial_message,
                 attachments,
                 platform_id,
+                permission_mode_override,
             )
             .await?;
             Ok(json!(true))

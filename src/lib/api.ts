@@ -475,6 +475,7 @@ export async function startSession(
   initialMessage?: string,
   attachments?: Array<{ content_base64: string; media_type: string; filename: string }>,
   platformId?: string,
+  permissionModeOverride?: string,
 ): Promise<void> {
   dbg("api", "startSession", {
     runId,
@@ -483,6 +484,7 @@ export async function startSession(
     hasMessage: !!initialMessage,
     attachments: attachments?.length ?? 0,
     platformId,
+    permissionModeOverride,
   });
   return invoke("start_session", {
     runId,
@@ -491,6 +493,7 @@ export async function startSession(
     initialMessage,
     attachments: attachments ?? null,
     platformId: platformId ?? null,
+    permissionModeOverride: permissionModeOverride ?? null,
   });
 }
 

@@ -3232,8 +3232,7 @@
       // 5. Start fresh session with the plan directly
       //    (NOT via sessionStorage + onMount — onMount won't re-fire on same-route goto)
       const planPrompt = `Implement the following plan:\n\n${planContent}`;
-      store.permissionMode = "acceptEdits";
-      const newRunId = await store.startSession(planPrompt, cwd, []);
+      const newRunId = await store.startSession(planPrompt, cwd, [], "acceptEdits");
       goto(`/chat?run=${newRunId}`);
     } catch (e) {
       dbgWarn("chat", "ExitPlanMode clear context failed:", e);

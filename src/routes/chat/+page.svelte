@@ -665,7 +665,7 @@
             disabledSet.has(s.name) && s.status !== "disabled" ? { ...s, status: "disabled" } : s,
           );
           if (patched.some((s, i) => s !== store.mcpServers[i])) {
-            store.mcpServers = patched;
+            store.updateMcpServers(patched);
             dbg("chat", "patched MCP disabled state", { disabledNames });
           }
         }
@@ -3551,7 +3551,7 @@
           sessionAlive={store.sessionAlive}
           onClose={() => (mcpPanelOpen = false)}
           onServersUpdate={(servers) => {
-            store.mcpServers = servers;
+            store.updateMcpServers(servers);
           }}
         />
       </div>

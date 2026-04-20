@@ -11,15 +11,27 @@ use crate::models::RunStatus;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
 const MANIFEST_VERSION: u32 = 1;
 const CACHE_TTL_SECS: u64 = 120;
+const LITE_CACHE_TTL_SECS: u64 = 30;
+const LITE_READ_BYTES: u64 = 65_536; // 64KB, same as cli_sessions.rs
 
 // ── Types ──
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub enum EntryTier {
+    Lite,
+    Full,
+}
+
+fn default_entry_tier() -> EntryTier {
+    EntryTier::Full
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RunIndexEntry {
@@ -43,6 +55,8 @@ pub struct RunIndexEntry {
     pub error_summary: Option<String>,
     pub has_errors: bool,
     pub permission_denied_count: u32,
+    #[serde(default = "default_entry_tier")]
+    pub entry_tier: EntryTier,
 }
 
 /// Manifest: tracks fingerprints per run to enable incremental updates.
@@ -64,6 +78,9 @@ static CACHE: std::sync::LazyLock<Mutex<Option<CachedIndex>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
 static COMPUTE_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
+
+static LITE_CACHE: std::sync::LazyLock<Mutex<Option<CachedIndex>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
 // ── File paths ──
 
@@ -108,27 +125,228 @@ const MAX_PREVIEW_LEN: usize = 100;
 /// Max error summary length.
 const MAX_ERROR_LEN: usize = 200;
 
+/// Read the head (first N bytes) and tail (last N bytes) of a file.
+/// Returns `(head_string, tail_string)`. The tail's first line is pre-trimmed
+/// (may be truncated by seek).
+fn read_head_tail(path: &Path, size: u64, chunk_bytes: u64) -> Option<(String, String)> {
+    let mut file = fs::File::open(path).ok()?;
+
+    // Head: read from start
+    let head_size = (size as usize).min(chunk_bytes as usize);
+    let mut head_buf = vec![0u8; head_size];
+    file.read_exact(&mut head_buf).ok()?;
+    let head_str = String::from_utf8_lossy(&head_buf).into_owned();
+
+    // Tail: only if file is larger than one chunk
+    if size > chunk_bytes {
+        let tail_start = size - chunk_bytes;
+        file.seek(SeekFrom::Start(tail_start)).ok()?;
+        let mut tail_buf = vec![0u8; chunk_bytes as usize];
+        let bytes_read = file.read(&mut tail_buf).ok()?;
+        tail_buf.truncate(bytes_read);
+        let tail_raw = String::from_utf8_lossy(&tail_buf).into_owned();
+        // Skip first line (may be truncated by seek)
+        let tail_str = if let Some(nl_pos) = tail_raw.find('\n') {
+            tail_raw[nl_pos + 1..].to_string()
+        } else {
+            String::new()
+        };
+        Some((head_str, tail_str))
+    } else {
+        Some((head_str, String::new()))
+    }
+}
+
+/// Accumulator for events.jsonl line parsing (shared between full and fast scans).
+struct ScanAccum {
+    tools_set: HashSet<String>,
+    files_set: HashSet<String>,
+    tool_call_count: u32,
+    num_turns: u64,
+    has_errors: bool,
+    error_summary: Option<String>,
+    permission_denied_count: u32,
+    is_per_turn_cost: bool,
+    total_cost: f64,
+    prev_cost: f64,
+    peak_cost: f64,
+    last_input: u64,
+    last_output: u64,
+    total_duration_ms: u64,
+    last_num_turns: u64,
+}
+
+impl ScanAccum {
+    fn new(is_per_turn_cost: bool) -> Self {
+        Self {
+            tools_set: HashSet::new(),
+            files_set: HashSet::new(),
+            tool_call_count: 0,
+            num_turns: 0,
+            has_errors: false,
+            error_summary: None,
+            permission_denied_count: 0,
+            is_per_turn_cost,
+            total_cost: 0.0,
+            prev_cost: 0.0,
+            peak_cost: 0.0,
+            last_input: 0,
+            last_output: 0,
+            total_duration_ms: 0,
+            last_num_turns: 0,
+        }
+    }
+
+    fn parse_line(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+
+        // Pre-filter: only parse lines containing relevant event types
+        if !line.contains("\"tool_start\"")
+            && !line.contains("\"tool_end\"")
+            && !line.contains("\"files_persisted\"")
+            && !line.contains("\"usage_update\"")
+            && !line.contains("\"run_state\"")
+            && !line.contains("\"permission_denied\"")
+            && !line.contains("\"user_message\"")
+        {
+            return;
+        }
+
+        let envelope: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let event = if envelope
+            .get("_bus")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            match envelope.get("event") {
+                Some(e) => e,
+                None => return,
+            }
+        } else {
+            &envelope
+        };
+
+        let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        match event_type {
+            "tool_start" => {
+                if let Some(tool_name) = event.get("tool_name").and_then(|v| v.as_str()) {
+                    self.tools_set.insert(tool_name.to_string());
+                }
+                self.tool_call_count += 1;
+                if let Some(fp) = event
+                    .get("input")
+                    .and_then(|i| i.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.files_set.insert(fp.to_string());
+                }
+            }
+            "tool_end" => {
+                if let Some(fp) = event
+                    .get("tool_use_result")
+                    .and_then(|r| r.get("filePath"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.files_set.insert(fp.to_string());
+                }
+            }
+            "files_persisted" => {
+                if let Some(files) = event.get("files").and_then(|v| v.as_array()) {
+                    for f in files {
+                        if let Some(fname) = f.get("filename").and_then(|v| v.as_str()) {
+                            self.files_set.insert(fname.to_string());
+                        }
+                    }
+                }
+            }
+            "usage_update" => {
+                let cost = event
+                    .get("total_cost_usd")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+
+                if self.is_per_turn_cost {
+                    self.total_cost += cost;
+                } else {
+                    if cost < self.prev_cost * 0.9 && self.prev_cost > 0.0 {
+                        self.total_cost += self.peak_cost;
+                        self.peak_cost = 0.0;
+                    }
+                    if cost > self.peak_cost {
+                        self.peak_cost = cost;
+                    }
+                    self.prev_cost = cost;
+                }
+
+                if self.is_per_turn_cost {
+                    self.last_input += event
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    self.last_output += event
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                } else {
+                    self.last_input = event
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(self.last_input);
+                    self.last_output = event
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(self.last_output);
+                }
+
+                if let Some(d) = event.get("duration_ms").and_then(|v| v.as_u64()) {
+                    self.total_duration_ms += d;
+                }
+                self.last_num_turns = event
+                    .get("num_turns")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(self.last_num_turns);
+            }
+            "run_state" => {
+                if let Some(err) = event.get("error").and_then(|v| v.as_str()) {
+                    self.has_errors = true;
+                    let truncated = if err.len() > MAX_ERROR_LEN {
+                        format!(
+                            "{}...",
+                            &err[..floor_char_boundary(err, MAX_ERROR_LEN)]
+                        )
+                    } else {
+                        err.to_string()
+                    };
+                    self.error_summary = Some(truncated);
+                }
+            }
+            "permission_denied" => {
+                self.permission_denied_count += 1;
+            }
+            "user_message" => {
+                self.num_turns += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn finalize_cost(&mut self) {
+        if !self.is_per_turn_cost {
+            self.total_cost += self.peak_cost;
+        }
+    }
+}
+
 /// Scan a single run's events.jsonl + meta.json to produce a RunIndexEntry.
 pub fn scan_run(run_id: &str, events_path: &Path, meta_json: &serde_json::Value) -> RunIndexEntry {
-    // Extract metadata fields
-    let cwd = meta_json
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let agent = meta_json
-        .get("agent")
-        .and_then(|v| v.as_str())
-        .unwrap_or("claude")
-        .to_string();
-    let model = meta_json
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let status: RunStatus = meta_json
-        .get("status")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or(RunStatus::Completed);
     let started_at = meta_json
         .get("started_at")
         .and_then(|v| v.as_str())
@@ -138,44 +356,9 @@ pub fn scan_run(run_id: &str, events_path: &Path, meta_json: &serde_json::Value)
         .get("ended_at")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let name = meta_json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(String::from);
 
-    // Prompt preview (truncate to MAX_PREVIEW_LEN)
-    let prompt = meta_json
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let prompt_preview = if prompt.len() > MAX_PREVIEW_LEN {
-        format!(
-            "{}...",
-            &prompt[..floor_char_boundary(prompt, MAX_PREVIEW_LEN)]
-        )
-    } else {
-        prompt.to_string()
-    };
-
-    // Scan events.jsonl
-    let mut tools_set: HashSet<String> = HashSet::new();
-    let mut files_set: HashSet<String> = HashSet::new();
-    let mut tool_call_count: u32 = 0;
-    let mut num_turns: u64 = 0;
-    let mut has_errors = false;
-    let mut error_summary: Option<String> = None;
-    let mut permission_denied_count: u32 = 0;
-
-    // Cost: detect per-turn vs cumulative based on source field.
-    // CLI imports have per-turn cost (no num_turns), native sessions have cumulative cost.
     let is_per_turn_cost = meta_json.get("source").and_then(|v| v.as_str()) == Some("cli_import");
-    let mut total_cost: f64 = 0.0;
-    let mut prev_cost: f64 = 0.0;
-    let mut peak_cost: f64 = 0.0;
-    let mut last_input: u64 = 0;
-    let mut last_output: u64 = 0;
-    let mut total_duration_ms: u64 = 0;
-    let mut last_num_turns: u64 = 0;
+    let mut accum = ScanAccum::new(is_per_turn_cost);
 
     if let Ok(file) = fs::File::open(events_path) {
         let reader = BufReader::new(file);
@@ -184,205 +367,126 @@ pub fn scan_run(run_id: &str, events_path: &Path, meta_json: &serde_json::Value)
                 Ok(l) => l,
                 Err(_) => continue,
             };
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
+            accum.parse_line(&line);
+        }
+    }
 
-            // Pre-filter: only parse lines containing relevant event types
-            let has_tool_start = line.contains("\"tool_start\"");
-            let has_tool_end = line.contains("\"tool_end\"");
-            let has_files_persisted = line.contains("\"files_persisted\"");
-            let has_usage = line.contains("\"usage_update\"");
-            let has_run_state = line.contains("\"run_state\"");
-            let has_perm_denied = line.contains("\"permission_denied\"");
-            let has_user_msg = line.contains("\"user_message\"");
+    accum.finalize_cost();
+    build_entry(run_id, &started_at, ended_at.as_deref(), meta_json, accum, EntryTier::Full)
+}
 
-            if !has_tool_start
-                && !has_tool_end
-                && !has_files_persisted
-                && !has_usage
-                && !has_run_state
-                && !has_perm_denied
-                && !has_user_msg
-            {
-                continue;
-            }
+/// Fast scan using head 64KB + tail 64KB byte-range reads.
+/// Produces a Lite entry with approximate data for instant display.
+pub fn scan_run_fast(run_id: &str, events_path: &Path, meta_json: &serde_json::Value) -> RunIndexEntry {
+    let started_at = meta_json
+        .get("started_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let ended_at = meta_json
+        .get("ended_at")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
-            let envelope: serde_json::Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+    let is_per_turn_cost = meta_json.get("source").and_then(|v| v.as_str()) == Some("cli_import");
+    let mut accum = ScanAccum::new(is_per_turn_cost);
 
-            // Extract inner event (bus format or direct)
-            let event = if envelope
-                .get("_bus")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                match envelope.get("event") {
-                    Some(e) => e,
-                    None => continue,
-                }
-            } else {
-                &envelope
-            };
-
-            let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-            match event_type {
-                "tool_start" => {
-                    if let Some(tool_name) = event.get("tool_name").and_then(|v| v.as_str()) {
-                        tools_set.insert(tool_name.to_string());
-                    }
-                    tool_call_count += 1;
-
-                    // Extract file_path from input
-                    if let Some(fp) = event
-                        .get("input")
-                        .and_then(|i| i.get("file_path"))
-                        .and_then(|v| v.as_str())
-                    {
-                        files_set.insert(fp.to_string());
-                    }
-                }
-                "tool_end" => {
-                    // Extract filePath from tool_use_result
-                    if let Some(fp) = event
-                        .get("tool_use_result")
-                        .and_then(|r| r.get("filePath"))
-                        .and_then(|v| v.as_str())
-                    {
-                        files_set.insert(fp.to_string());
-                    }
-                }
-                "files_persisted" => {
-                    if let Some(files) = event.get("files").and_then(|v| v.as_array()) {
-                        for f in files {
-                            if let Some(fname) = f.get("filename").and_then(|v| v.as_str()) {
-                                files_set.insert(fname.to_string());
-                            }
-                        }
-                    }
-                }
-                "usage_update" => {
-                    let cost = event
-                        .get("total_cost_usd")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-
-                    if is_per_turn_cost {
-                        // CLI imports: total_cost_usd is per-turn, sum directly
-                        total_cost += cost;
-                    } else {
-                        // Native sessions: total_cost_usd is cumulative, use peak detection
-                        if cost < prev_cost * 0.9 && prev_cost > 0.0 {
-                            total_cost += peak_cost;
-                            peak_cost = 0.0;
-                        }
-                        if cost > peak_cost {
-                            peak_cost = cost;
-                        }
-                        prev_cost = cost;
-                    }
-
-                    // Tokens: for per-turn cost, sum them; for cumulative, take last
-                    if is_per_turn_cost {
-                        last_input += event
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        last_output += event
-                            .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                    } else {
-                        last_input = event
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(last_input);
-                        last_output = event
-                            .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(last_output);
-                    }
-
-                    if let Some(d) = event.get("duration_ms").and_then(|v| v.as_u64()) {
-                        total_duration_ms += d;
-                    }
-                    last_num_turns = event
-                        .get("num_turns")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(last_num_turns);
-                }
-                "run_state" => {
-                    if let Some(err) = event.get("error").and_then(|v| v.as_str()) {
-                        has_errors = true;
-                        let truncated = if err.len() > MAX_ERROR_LEN {
-                            format!("{}...", &err[..floor_char_boundary(err, MAX_ERROR_LEN)])
-                        } else {
-                            err.to_string()
-                        };
-                        error_summary = Some(truncated);
-                    }
-                }
-                "permission_denied" => {
-                    permission_denied_count += 1;
-                }
-                "user_message" => {
-                    num_turns += 1;
-                }
-                _ => {}
+    let file_size = fs::metadata(events_path).map(|m| m.len()).unwrap_or(0);
+    if let Some((head_str, tail_str)) = read_head_tail(events_path, file_size, LITE_READ_BYTES) {
+        // Parse head region (all lines valid)
+        for line in head_str.lines() {
+            accum.parse_line(line);
+        }
+        // Parse tail region (first line already stripped by read_head_tail)
+        if !tail_str.is_empty() {
+            for line in tail_str.lines() {
+                accum.parse_line(line);
             }
         }
     }
 
-    // Add final segment's peak cost (only for cumulative mode)
-    if !is_per_turn_cost {
-        total_cost += peak_cost;
-    }
+    accum.finalize_cost();
+    build_entry(run_id, &started_at, ended_at.as_deref(), meta_json, accum, EntryTier::Lite)
+}
 
-    // Use num_turns from usage_update if available (more accurate), else from user_message count
-    let final_num_turns = if last_num_turns > 0 {
-        last_num_turns
+/// Build a RunIndexEntry from meta.json fields + a ScanAccum.
+fn build_entry(
+    run_id: &str,
+    started_at: &str,
+    ended_at: Option<&str>,
+    meta_json: &serde_json::Value,
+    accum: ScanAccum,
+    tier: EntryTier,
+) -> RunIndexEntry {
+    let final_num_turns = if accum.last_num_turns > 0 {
+        accum.last_num_turns
     } else {
-        num_turns
+        accum.num_turns
     };
 
-    // Calculate duration_ms from timestamps if we don't have it from usage_update
-    let final_duration = if total_duration_ms > 0 {
-        total_duration_ms
+    let final_duration = if accum.total_duration_ms > 0 {
+        accum.total_duration_ms
     } else {
-        calc_duration_ms(&started_at, ended_at.as_deref()).unwrap_or(0)
+        calc_duration_ms(started_at, ended_at).unwrap_or(0)
     };
 
-    // Convert sets to sorted vecs
-    let mut tools_used: Vec<String> = tools_set.into_iter().collect();
+    let mut tools_used: Vec<String> = accum.tools_set.into_iter().collect();
     tools_used.sort();
-    let mut files_touched: Vec<String> = files_set.into_iter().collect();
+    let mut files_touched: Vec<String> = accum.files_set.into_iter().collect();
     files_touched.sort();
 
     RunIndexEntry {
         run_id: run_id.to_string(),
-        cwd,
-        agent,
-        model,
-        status,
-        started_at,
-        ended_at,
-        name,
-        prompt_preview,
+        cwd: meta_json
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        agent: meta_json
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude")
+            .to_string(),
+        model: meta_json
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        status: meta_json
+            .get("status")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(RunStatus::Completed),
+        started_at: started_at.to_string(),
+        ended_at: ended_at.map(String::from),
+        name: meta_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        prompt_preview: {
+            let prompt = meta_json
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if prompt.len() > MAX_PREVIEW_LEN {
+                format!(
+                    "{}...",
+                    &prompt[..floor_char_boundary(prompt, MAX_PREVIEW_LEN)]
+                )
+            } else {
+                prompt.to_string()
+            }
+        },
         tools_used,
-        tool_call_count,
+        tool_call_count: accum.tool_call_count,
         files_touched,
-        total_cost_usd: total_cost,
-        input_tokens: last_input,
-        output_tokens: last_output,
+        total_cost_usd: accum.total_cost,
+        input_tokens: accum.last_input,
+        output_tokens: accum.last_output,
         duration_ms: final_duration,
         num_turns: final_num_turns,
-        error_summary,
-        has_errors,
-        permission_denied_count,
+        error_summary: accum.error_summary,
+        has_errors: accum.has_errors,
+        permission_denied_count: accum.permission_denied_count,
+        entry_tier: tier,
     }
 }
 
@@ -550,9 +654,111 @@ pub fn build_or_update_index() -> Result<Vec<RunIndexEntry>, String> {
 
 /// Invalidate the in-memory cache (e.g. after a run completes).
 pub fn invalidate_cache() {
-    let mut cache = CACHE.lock().unwrap();
-    *cache = None;
-    log::debug!("[run_index] cache invalidated");
+    {
+        let mut cache = CACHE.lock().unwrap();
+        *cache = None;
+    }
+    {
+        let mut lite_cache = LITE_CACHE.lock().unwrap();
+        *lite_cache = None;
+    }
+    log::debug!("[run_index] cache invalidated (main + lite)");
+}
+
+/// Build a lite index for fast initial display using head+tail byte-range reads.
+/// - If the main cache has valid Full entries, returns those
+/// - If the lite cache is still fresh (< 30s), returns it
+/// - Otherwise builds lite entries using scan_run_fast
+pub fn build_lite_index() -> Result<Vec<RunIndexEntry>, String> {
+    // Fast path 1: main cache has valid full entries
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some(ref cached) = *cache {
+            if cached.computed_at.elapsed().as_secs() < CACHE_TTL_SECS {
+                let all_full = cached.entries.iter().all(|e| e.entry_tier == EntryTier::Full);
+                if all_full {
+                    log::debug!("[run_index] lite: returning main cache ({} full entries)", cached.entries.len());
+                    return Ok(cached.entries.clone());
+                }
+            }
+        }
+    }
+
+    // Fast path 2: lite cache still fresh
+    {
+        let lite_cache = LITE_CACHE.lock().unwrap();
+        if let Some(ref cached) = *lite_cache {
+            if cached.computed_at.elapsed().as_secs() < LITE_CACHE_TTL_SECS {
+                log::debug!("[run_index] lite: returning lite cache ({} entries)", cached.entries.len());
+                return Ok(cached.entries.clone());
+            }
+        }
+    }
+
+    log::debug!("[run_index] lite: building fresh lite index");
+    let start = Instant::now();
+
+    let runs_dir = super::runs_dir();
+    if !runs_dir.exists() {
+        let entries = vec![];
+        update_lite_cache(entries.clone());
+        return Ok(entries);
+    }
+
+    let mut all_entries: Vec<RunIndexEntry> = vec![];
+
+    if let Ok(dir_entries) = fs::read_dir(&runs_dir) {
+        for entry in dir_entries.flatten() {
+            let run_id = match entry.file_name().to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let events_path = entry.path().join("events.jsonl");
+            let meta_path = entry.path().join("meta.json");
+
+            if !events_path.exists() || !meta_path.exists() {
+                continue;
+            }
+
+            let meta_content = match fs::read_to_string(&meta_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let meta_json: serde_json::Value = match serde_json::from_str(&meta_content) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if meta_json
+                .get("deleted_at")
+                .and_then(|v| v.as_str())
+                .is_some()
+            {
+                continue;
+            }
+
+            let entry = scan_run_fast(&run_id, &events_path, &meta_json);
+            all_entries.push(entry);
+        }
+    }
+
+    let elapsed = start.elapsed();
+    log::debug!(
+        "[run_index] lite index built: {} entries in {:?}",
+        all_entries.len(),
+        elapsed
+    );
+
+    update_lite_cache(all_entries.clone());
+    Ok(all_entries)
+}
+
+fn update_lite_cache(entries: Vec<RunIndexEntry>) {
+    let mut lite_cache = LITE_CACHE.lock().unwrap();
+    *lite_cache = Some(CachedIndex {
+        computed_at: Instant::now(),
+        entries,
+    });
 }
 
 fn load_manifest() -> Manifest {

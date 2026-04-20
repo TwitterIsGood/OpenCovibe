@@ -1,8 +1,9 @@
 use crate::models::{
     FacetCount, RunSearchFacets, RunSearchFilters, RunSearchResponse, RunSearchResult,
 };
-use crate::storage::run_index::{self, RunIndexEntry};
+use crate::storage::run_index::{self, EntryTier, RunIndexEntry};
 use std::collections::HashMap;
+use tauri::Emitter;
 
 #[tauri::command]
 pub async fn search_runs(filters: RunSearchFilters) -> Result<RunSearchResponse, String> {
@@ -42,6 +43,65 @@ pub async fn search_runs(filters: RunSearchFilters) -> Result<RunSearchResponse,
         results,
         facets,
         total_matching,
+        is_lite: false,
+    })
+}
+
+#[tauri::command]
+pub async fn search_runs_fast(
+    filters: RunSearchFilters,
+    app: tauri::AppHandle,
+) -> Result<RunSearchResponse, String> {
+    log::debug!("[history] search_runs_fast (progressive)");
+
+    let entries = tokio::task::spawn_blocking(run_index::build_lite_index)
+        .await
+        .map_err(|e| format!("Join error: {}", e))??;
+
+    let has_lite = entries.iter().any(|e| e.entry_tier == EntryTier::Lite);
+
+    let facets = compute_facets(&entries);
+    let filtered = apply_filters(&entries, &filters);
+    let total_matching = filtered.len();
+
+    let mut sorted = filtered;
+    sort_entries(&mut sorted, &filters);
+
+    let offset = filters.offset.unwrap_or(0);
+    let limit = filters.limit.unwrap_or(50);
+    let page: Vec<_> = sorted.into_iter().skip(offset).take(limit).collect();
+    let results: Vec<RunSearchResult> = page.into_iter().map(entry_to_result).collect();
+
+    log::debug!(
+        "[history] search_runs_fast: total={}, matching={}, returned={}, lite={}",
+        facets.total_runs,
+        total_matching,
+        results.len(),
+        has_lite,
+    );
+
+    // Kick off background full scan if any entries are lite
+    if has_lite {
+        let app_clone = app.clone();
+        tokio::task::spawn_blocking(move || match run_index::build_or_update_index() {
+            Ok(full_entries) => {
+                log::debug!(
+                    "[history] background full scan complete: {} entries",
+                    full_entries.len()
+                );
+                let _ = app_clone.emit("run-index-upgraded", ());
+            }
+            Err(e) => {
+                log::warn!("[history] background full scan failed: {}", e);
+            }
+        });
+    }
+
+    Ok(RunSearchResponse {
+        results,
+        facets,
+        total_matching,
+        is_lite: has_lite,
     })
 }
 
@@ -354,6 +414,7 @@ mod tests {
             error_summary: None,
             has_errors: false,
             permission_denied_count: 0,
+            entry_tier: run_index::EntryTier::Full,
         }
     }
 

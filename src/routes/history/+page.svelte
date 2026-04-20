@@ -2,11 +2,12 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { searchRuns } from "$lib/api";
+  import { searchRunsFast } from "$lib/api";
   import type { RunSearchFilters, RunSearchResponse } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import { formatCostDisplay } from "$lib/utils/format";
+  import { getTransport } from "$lib/transport";
 
   let filters = $state<RunSearchFilters>({});
   let response = $state<RunSearchResponse | null>(null);
@@ -94,7 +95,7 @@
       };
 
       dbg("history", "loadData", requestFilters);
-      const res = await searchRuns(requestFilters);
+      const res = await searchRunsFast(requestFilters);
 
       if (id !== requestId) return; // stale
 
@@ -218,6 +219,22 @@
       filters = { query: q };
     }
     loadData();
+
+    // Listen for background full-scan completion → refresh with full data
+    let unlisten: (() => void) | undefined;
+    getTransport()
+      .listen("run-index-upgraded", () => {
+        dbg("history", "received run-index-upgraded, refreshing");
+        stableTools = [];
+        loadData();
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+
+    return () => {
+      unlisten?.();
+    };
   });
 </script>
 

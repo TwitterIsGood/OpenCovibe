@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import * as api from "$lib/api";
-  import type { UsageOverview, DailyAggregate } from "$lib/types";
+  import type { UsageOverview, DailyAggregate, ProxyRequestLog, ProxyDayHealth, ProxyLogDistinctValues } from "$lib/types";
   import { formatCost, formatTokenCount } from "$lib/utils/format";
   import { dbg, dbgWarn } from "$lib/utils/debug";
   import Card from "$lib/components/Card.svelte";
@@ -29,6 +29,41 @@
 
   /** Whether cache clear + rescan is in progress. */
   let refreshing = $state(false);
+
+  // ── Proxy tab state ──
+  let mainTab = $state<"overview" | "proxy">("overview");
+  let proxyLogs = $state<ProxyRequestLog[]>([]);
+  let proxyTotal = $state(0);
+  let proxyPage = $state(0);
+  const PROXY_PAGE_SIZE = 50;
+  let proxyHealth = $state<ProxyDayHealth[]>([]);
+  let proxyFilterModel = $state<string | null>(null);
+  let proxyFilterProvider = $state<string | null>(null);
+  let proxyFilterValues = $state<ProxyLogDistinctValues>({ models: [], providers: [] });
+
+  async function loadProxyData() {
+    try {
+      const [logsResp, health, filterValues] = await Promise.all([
+        api.getProxyLogs(
+          { model: proxyFilterModel, providerId: proxyFilterProvider, days: 30 },
+          PROXY_PAGE_SIZE,
+          proxyPage * PROXY_PAGE_SIZE,
+        ),
+        api.getProxyHealth(24),
+        api.getProxyLogFilters(),
+      ]);
+      proxyLogs = logsResp.entries;
+      proxyTotal = logsResp.total;
+      proxyHealth = health;
+      proxyFilterValues = filterValues;
+    } catch (e) {
+      dbgWarn("usage", "loadProxyData error", e);
+    }
+  }
+
+  function proxyTotalTokens(log: ProxyRequestLog): number {
+    return (log.inputTokens ?? 0) + (log.outputTokens ?? 0) + (log.thinkingTokens ?? 0) + (log.cacheReadTokens ?? 0) + (log.cacheCreationTokens ?? 0);
+  }
 
   const DATE_RANGES = [
     { label: "1d", days: 1 },
@@ -249,7 +284,30 @@
     </div>
   </div>
 
-  <!-- Scope tabs: App / Global -->
+  <!-- Main tab: Overview / Proxy -->
+  <div class="flex gap-1 bg-muted/40 rounded-lg p-0.5 w-fit">
+    <button
+      class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+        {mainTab === 'overview'
+        ? 'bg-background text-foreground shadow-sm'
+        : 'text-muted-foreground hover:text-foreground'}"
+      onclick={() => { mainTab = "overview"; }}
+    >
+      {t("usage_tabOverview")}
+    </button>
+    <button
+      class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+        {mainTab === 'proxy'
+        ? 'bg-background text-foreground shadow-sm'
+        : 'text-muted-foreground hover:text-foreground'}"
+      onclick={() => { mainTab = "proxy"; loadProxyData(); }}
+    >
+      {t("usage_tabProxy")}
+    </button>
+  </div>
+
+  {#if mainTab === "overview"}
+  <!-- Overview tab content -->
   <div class="flex items-center gap-4">
     <div class="flex gap-1 bg-muted/40 rounded-lg p-0.5">
       <button
@@ -638,5 +696,209 @@
         {/if}
       </Card>
     {/if}
+  {/if}
+
+  {:else if mainTab === "proxy"}
+  <!-- Proxy tab content -->
+
+  <!-- Health timeline (30-min slot grid) -->
+  <Card class="p-6 space-y-3">
+    <div class="flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+        {t("proxy_health")}
+      </h2>
+      <span class="text-[11px] text-muted-foreground">{t("proxy_healthHours", { hours: 24 })}</span>
+    </div>
+    {#if proxyHealth.length > 0}
+      {@const CELL_W = 14}
+      {@const CELL_H = 24}
+      {@const GAP = 2}
+      {@const STEP = CELL_W + GAP}
+      <!-- Build a map from slot string -> { success, error } -->
+      {@const slotMap = (() => {
+        const m = new Map<string, { success: number; error: number }>();
+        for (const h of proxyHealth) {
+          const existing = m.get(h.date) ?? { success: 0, error: 0 };
+          existing.success += h.successCount;
+          existing.error += h.errorCount;
+          m.set(h.date, existing);
+        }
+        return m;
+      })()}
+      {@const allValues = [...slotMap.values()].map(v => v.success + v.error)}
+      {@const nonZero = allValues.filter(v => v > 0).sort((a, b) => a - b)}
+      {@const thresholds = (() => {
+        if (nonZero.length === 0) return [0, 0, 0] as [number, number, number];
+        const p = (pct: number) => nonZero[Math.floor((pct / 100) * (nonZero.length - 1))];
+        return [p(25), p(50), p(75)] as [number, number, number];
+      })()}
+      <!-- Generate all 48 slots (24h × 2 per hour), ordered oldest→newest -->
+      {@const slots = (() => {
+        const result: string[] = [];
+        const now = new Date();
+        for (let i = 47; i >= 0; i--) {
+          const d = new Date(now.getTime() - i * 30 * 60 * 1000);
+          const min = d.getUTCMinutes() < 30 ? 0 : 30;
+          result.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}:${String(min).padStart(2, '0')}`);
+        }
+        return result;
+      })()}
+      <!-- Extract time labels for every 2-hour boundary -->
+      {@const timeLabels = (() => {
+        const labels: { label: string; idx: number }[] = [];
+        slots.forEach((slot, idx) => {
+          const time = slot.slice(11); // "HH:MM"
+          if (time === '00:00' || time === '02:00' || time === '04:00' || time === '06:00' || time === '08:00' || time === '10:00' || time === '12:00' || time === '14:00' || time === '16:00' || time === '18:00' || time === '20:00' || time === '22:00') {
+            labels.push({ label: time, idx });
+          }
+        });
+        return labels;
+      })()}
+
+      <!-- Cells row -->
+      <div class="overflow-x-auto">
+        <div class="flex" style="gap: {GAP}px; min-width: max-content;">
+          {#each slots as slot, i}
+            {@const val = slotMap.get(slot) ?? { success: 0, error: 0 }}
+            {@const total = val.success + val.error}
+            {@const level = total <= 0 ? 0 : total <= thresholds[0] ? 1 : total <= thresholds[1] ? 2 : total <= thresholds[2] ? 3 : 4}
+            {@const cellClass = level === 0 ? 'bg-muted/30'
+              : level === 1 ? 'bg-emerald-500/20'
+              : level === 2 ? 'bg-emerald-500/40'
+              : level === 3 ? 'bg-emerald-500/65'
+              : 'bg-emerald-500'}
+            <div
+              class="shrink-0 rounded-[2px] {cellClass}"
+              style="width: {CELL_W}px; height: {CELL_H}px;"
+              title="{slot}: {t('proxy_success')} {val.success}, {t('proxy_error')} {val.error}, {t('proxy_thTotalT')} {total}"
+            ></div>
+          {/each}
+        </div>
+
+        <!-- Time labels -->
+        <div class="relative" style="height: 16px; margin-top: 2px;">
+          {#each timeLabels as tl}
+            <span class="absolute text-[9px] text-muted-foreground select-none whitespace-nowrap" style="left: {tl.idx * STEP}px; transform: translateX(-25%);">
+              {tl.label}
+            </span>
+          {/each}
+        </div>
+      </div>
+
+      <!-- Legend -->
+      <div class="flex items-center gap-1 text-[10px] text-muted-foreground justify-end select-none">
+        <span>{t("usage_heatmapLess")}</span>
+        <div class="rounded-[2px] bg-muted/30" style="width: {CELL_W}px; height: {CELL_W}px;"></div>
+        <div class="rounded-[2px] bg-emerald-500/20" style="width: {CELL_W}px; height: {CELL_W}px;"></div>
+        <div class="rounded-[2px] bg-emerald-500/40" style="width: {CELL_W}px; height: {CELL_W}px;"></div>
+        <div class="rounded-[2px] bg-emerald-500/65" style="width: {CELL_W}px; height: {CELL_W}px;"></div>
+        <div class="rounded-[2px] bg-emerald-500" style="width: {CELL_W}px; height: {CELL_W}px;"></div>
+        <span>{t("usage_heatmapMore")}</span>
+      </div>
+    {:else}
+      <p class="text-sm text-muted-foreground py-8 text-center">{t("proxy_noHealthData")}</p>
+    {/if}
+  </Card>
+
+  <!-- Request log -->
+  <Card class="p-6 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+        {t("proxy_requestLog")}
+      </h2>
+      <div class="flex gap-2">
+        <select
+          class="rounded-md border bg-background px-2 py-1 text-[11px]"
+          onchange={(e) => { proxyFilterModel = (e.target as HTMLSelectElement).value || null; proxyPage = 0; loadProxyData(); }}
+        >
+          <option value="">{t("proxy_filterAll")} {t("proxy_thModel")}</option>
+          {#each proxyFilterValues.models as m}
+            <option value={m} selected={proxyFilterModel === m}>{m}</option>
+          {/each}
+        </select>
+        <select
+          class="rounded-md border bg-background px-2 py-1 text-[11px]"
+          onchange={(e) => { proxyFilterProvider = (e.target as HTMLSelectElement).value || null; proxyPage = 0; loadProxyData(); }}
+        >
+          <option value="">{t("proxy_filterAll")} {t("proxy_thProvider")}</option>
+          {#each proxyFilterValues.providers as p}
+            <option value={p} selected={proxyFilterProvider === p}>{p}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
+
+    {#if proxyLogs.length > 0}
+      <div class="overflow-x-auto -mx-2">
+        <table class="w-full text-[11px] min-w-[800px]">
+          <thead>
+            <tr class="border-b text-left text-muted-foreground">
+              <th class="pb-2 px-2 font-medium whitespace-nowrap">{t("proxy_thTime")}</th>
+              <th class="pb-2 px-2 font-medium whitespace-nowrap">{t("proxy_thModel")}</th>
+              <th class="pb-2 px-2 font-medium whitespace-nowrap">{t("proxy_thProvider")}</th>
+              <th class="pb-2 px-2 font-medium whitespace-nowrap">{t("proxy_thResult")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thLatency")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thInputT")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thOutputT")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thThinkingT")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thCacheT")}</th>
+              <th class="pb-2 px-2 font-medium text-right whitespace-nowrap">{t("proxy_thTotalT")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each proxyLogs as log}
+              <tr class="border-b border-border/50 hover:bg-accent/30 transition-colors">
+                <td class="py-2 px-2 whitespace-nowrap text-muted-foreground font-mono">{log.ts.slice(0, 16).replace("T", " ")}</td>
+                <td class="py-2 px-2 font-mono max-w-[160px] truncate">{log.model}</td>
+                <td class="py-2 px-2 text-muted-foreground max-w-[120px] truncate">{log.providerId}</td>
+                <td class="py-2 px-2">
+                  <span class="inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium
+                    {log.result === 'success' ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600'}">
+                    {log.statusCode}
+                  </span>
+                </td>
+                <td class="py-2 px-2 text-right tabular-nums text-muted-foreground">{log.latencyMs}ms</td>
+                <td class="py-2 px-2 text-right tabular-nums">{log.inputTokens ?? '—'}</td>
+                <td class="py-2 px-2 text-right tabular-nums">{log.outputTokens ?? '—'}</td>
+                <td class="py-2 px-2 text-right tabular-nums">{log.thinkingTokens ?? '—'}</td>
+                <td class="py-2 px-2 text-right tabular-nums">
+                  {#if log.cacheReadTokens || log.cacheCreationTokens}
+                    {(log.cacheReadTokens ?? 0) + (log.cacheCreationTokens ?? 0)}
+                  {:else}—{/if}
+                </td>
+                <td class="py-2 px-2 text-right tabular-nums font-medium">
+                  {#if proxyTotalTokens(log) > 0}{proxyTotalTokens(log)}{:else}—{/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div class="flex items-center justify-between pt-2">
+        <button
+          class="rounded-md border px-3 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-40 transition-colors"
+          disabled={proxyPage === 0}
+          onclick={() => { proxyPage--; loadProxyData(); }}
+        >
+          {t("proxy_prev")}
+        </button>
+        <span class="text-[11px] text-muted-foreground">
+          {Math.min(proxyPage * PROXY_PAGE_SIZE + 1, proxyTotal)}–{Math.min((proxyPage + 1) * PROXY_PAGE_SIZE, proxyTotal)} / {proxyTotal}
+        </span>
+        <button
+          class="rounded-md border px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-accent disabled:opacity-40"
+          disabled={(proxyPage + 1) * PROXY_PAGE_SIZE >= proxyTotal}
+          onclick={() => { proxyPage++; loadProxyData(); }}
+        >
+          {t("proxy_next")}
+        </button>
+      </div>
+    {:else}
+      <p class="text-sm text-muted-foreground py-8 text-center">{t("proxy_noLogs")}</p>
+    {/if}
+  </Card>
+
   {/if}
 </div>

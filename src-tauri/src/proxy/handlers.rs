@@ -1,3 +1,4 @@
+use crate::models::ProxyRequestLog;
 use crate::proxy::routing;
 use crate::proxy::streaming;
 use crate::proxy::translator;
@@ -7,6 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// POST /v1/messages — main inference endpoint (Anthropic protocol inbound).
@@ -67,7 +69,6 @@ pub async fn handle_messages(
 
     // Build upstream request
     let (upstream_body, upstream_url) = if provider.protocol == "openai" {
-        // Translate Anthropic -> OpenAI
         let translated = translator::anthropic_to_openai_request(&req_value, &actual_model);
         let url = format!(
             "{}/v1/chat/completions",
@@ -75,10 +76,9 @@ pub async fn handle_messages(
         );
         (serde_json::to_vec(&translated).unwrap(), url)
     } else {
-        // Same protocol (Anthropic) — swap model name
         let mut body = req_value.clone();
         if let Some(obj) = body.as_object_mut() {
-            obj.insert("model".to_string(), serde_json::Value::String(actual_model));
+            obj.insert("model".to_string(), serde_json::Value::String(actual_model.clone()));
         }
         let url = format!("{}/v1/messages", provider.base_url.trim_end_matches('/'));
         (serde_json::to_vec(&body).unwrap(), url)
@@ -101,36 +101,84 @@ pub async fn handle_messages(
         }
     }
 
+    let start = Instant::now();
     let upstream_resp = match req_builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            log::error!(
-                "[proxy] upstream request to {} failed: {e}",
-                upstream_url
-            );
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("upstream error: {e}"),
-            )
-                .into_response();
+            let latency_ms = start.elapsed().as_millis() as u64;
+            log::error!("[proxy] upstream request to {} failed: {e}", upstream_url);
+            cfg.log_store.append(ProxyRequestLog {
+                id: 0,
+                ts: String::new(),
+                model: requested_model.to_string(),
+                actual_model: actual_model.clone(),
+                provider_id: provider.platform_id.clone(),
+                result: "error".to_string(),
+                status_code: 502,
+                latency_ms,
+                input_tokens: None,
+                output_tokens: None,
+                thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                is_stream,
+            });
+            return (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")).into_response();
         }
     };
 
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let status = upstream_resp.status();
+    let status_code = status.as_u16();
+    let is_success = status.is_success();
+
     log::info!(
-        "[proxy] upstream responded status={} content_type={:?}",
-        upstream_resp.status(),
-        upstream_resp.headers().get("content-type").and_then(|v| v.to_str().ok())
+        "[proxy] upstream responded status={} latency={}ms",
+        status_code, latency_ms
     );
 
-    let status = upstream_resp.status();
-    if !status.is_success() {
-        let status_code = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let body = upstream_resp.text().await.unwrap_or_default();
-        return (status_code, body).into_response();
+    if !is_success {
+        let body_text = upstream_resp.text().await.unwrap_or_default();
+        cfg.log_store.append(ProxyRequestLog {
+            id: 0,
+            ts: String::new(),
+            model: requested_model.to_string(),
+            actual_model,
+            provider_id: provider.platform_id.clone(),
+            result: "error".to_string(),
+            status_code,
+            latency_ms,
+            input_tokens: None,
+            output_tokens: None,
+            thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            is_stream,
+        });
+        let sc = StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY);
+        return (sc, body_text).into_response();
     }
 
     // Streaming response
     if is_stream {
+        // Log without token data (tokens arrive in SSE events which we don't parse here)
+        cfg.log_store.append(ProxyRequestLog {
+            id: 0,
+            ts: String::new(),
+            model: requested_model.to_string(),
+            actual_model,
+            provider_id: provider.platform_id.clone(),
+            result: "success".to_string(),
+            status_code,
+            latency_ms,
+            input_tokens: None,
+            output_tokens: None,
+            thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            is_stream: true,
+        });
+
         let content_type = upstream_resp
             .headers()
             .get("content-type")
@@ -139,15 +187,36 @@ pub async fn handle_messages(
             .to_string();
 
         if provider.protocol == "openai" {
-            // Cross-protocol: translate OpenAI SSE -> Anthropic SSE
             streaming::translate_openai_to_anthropic_stream(upstream_resp).into_response()
         } else {
-            // Same protocol: pass through bytes directly
             streaming::passthrough_stream(upstream_resp, content_type).into_response()
         }
     } else {
-        // Non-streaming response
+        // Non-streaming response — extract token counts
         let resp_body = upstream_resp.bytes().await.unwrap_or_default();
+        let resp_json: serde_json::Result<serde_json::Value> =
+            serde_json::from_slice(&resp_body);
+
+        let (input_tokens, output_tokens, thinking_tokens, cache_read, cache_creation) =
+            extract_tokens(&resp_json, &provider.protocol);
+
+        cfg.log_store.append(ProxyRequestLog {
+            id: 0,
+            ts: String::new(),
+            model: requested_model.to_string(),
+            actual_model,
+            provider_id: provider.platform_id.clone(),
+            result: "success".to_string(),
+            status_code,
+            latency_ms,
+            input_tokens,
+            output_tokens,
+            thinking_tokens,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            is_stream: false,
+        });
+
         if provider.protocol == "openai" {
             let translated = translator::openai_to_anthropic_response(&resp_body);
             (
@@ -167,6 +236,44 @@ pub async fn handle_messages(
     }
 }
 
+/// Extract token counts from a response JSON (best-effort).
+fn extract_tokens(
+    resp: &serde_json::Result<serde_json::Value>,
+    protocol: &str,
+) -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>, Option<u64>) {
+    let Ok(val) = resp else {
+        return (None, None, None, None, None);
+    };
+
+    if protocol == "openai" {
+        // OpenAI format: { usage: { prompt_tokens, completion_tokens } }
+        let usage = val.get("usage");
+        let input = usage
+            .and_then(|u| u.get("prompt_tokens"))
+            .and_then(|v| v.as_u64());
+        let output = usage
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|v| v.as_u64());
+        (input, output, None, None, None)
+    } else {
+        // Anthropic format: { usage: { input_tokens, output_tokens, ... } }
+        let usage = val.get("usage");
+        let input = usage
+            .and_then(|u| u.get("input_tokens"))
+            .and_then(|v| v.as_u64());
+        let output = usage
+            .and_then(|u| u.get("output_tokens"))
+            .and_then(|v| v.as_u64());
+        let cache_read = usage
+            .and_then(|u| u.get("cache_read_input_tokens"))
+            .and_then(|v| v.as_u64());
+        let cache_creation = usage
+            .and_then(|u| u.get("cache_creation_input_tokens"))
+            .and_then(|v| v.as_u64());
+        (input, output, None, cache_read, cache_creation)
+    }
+}
+
 /// GET /v1/models — return aggregated model list.
 pub async fn handle_models(
     State(config): State<Arc<RwLock<ProxyConfig>>>,
@@ -177,12 +284,14 @@ pub async fn handle_models(
         return (StatusCode::UNAUTHORIZED, "invalid proxy key").into_response();
     }
 
+    let mut seen = std::collections::HashSet::new();
     let models: Vec<serde_json::Value> = cfg
         .providers
         .iter()
         .filter(|p| p.enabled)
-        .flat_map(|p| p.models.iter().map(move |m| (p, m)))
-        .map(|(_, m)| {
+        .flat_map(|p| p.models.iter().map(move |m| m.clone()))
+        .filter(|m| seen.insert(m.clone()))
+        .map(|m| {
             serde_json::json!({
                 "id": m,
                 "object": "model",
@@ -216,7 +325,6 @@ pub async fn handle_count_tokens(
         return (StatusCode::UNAUTHORIZED, "invalid proxy key").into_response();
     }
 
-    // For count_tokens, route to the first enabled Anthropic provider
     let provider = match cfg.providers.iter().find(|p| p.enabled && p.protocol == "anthropic") {
         Some(p) => p,
         None => return (StatusCode::NOT_FOUND, "no anthropic provider available").into_response(),

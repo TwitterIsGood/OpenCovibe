@@ -1342,6 +1342,11 @@ pub enum BusEvent {
         reason: RalphCompleteReason,
         iteration: u32,
     },
+    /// Turn-end recap summary (system/away_summary from CLI).
+    Recap {
+        run_id: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1861,6 +1866,8 @@ pub struct RunSearchResponse {
     pub results: Vec<RunSearchResult>,
     pub facets: RunSearchFacets,
     pub total_matching: usize,
+    #[serde(default)]
+    pub is_lite: bool,
 }
 
 // ────────────────────────────────────────────────────────
@@ -1906,4 +1913,45 @@ pub struct ProxyModelInfo {
     pub platform_id: String,
     pub provider_name: String,
     pub protocol: String,
+}
+
+// ── Proxy request logging ──
+
+/// A single proxy request log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyRequestLog {
+    pub id: u64,
+    pub ts: String,
+    pub model: String,
+    pub actual_model: String,
+    pub provider_id: String,
+    pub result: String,
+    pub status_code: u16,
+    pub latency_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub thinking_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub is_stream: bool,
+}
+
+/// Per-day health summary for a provider.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyDayHealth {
+    pub date: String,
+    pub provider_id: String,
+    pub success_count: u32,
+    pub error_count: u32,
+}
+
+/// Filter for querying proxy logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyLogFilter {
+    pub model: Option<String>,
+    pub provider_id: Option<String>,
+    pub days: Option<u32>,
 }

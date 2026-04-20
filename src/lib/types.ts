@@ -1037,7 +1037,8 @@ export type BusEvent =
       run_id: string;
       reason: RalphCompleteReason;
       iteration: number;
-    };
+    }
+  | { type: "recap"; run_id: string; text: string };
 
 export type RalphCompleteReason =
   | "max_iterations"
@@ -1118,7 +1119,8 @@ export type TimelineEntry =
       subTimeline?: TimelineEntry[];
     }
   | { kind: "separator"; id: string; anchorId: string; content: string; ts: string }
-  | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string };
+  | { kind: "command_output"; id: string; anchorId: string; content: string; ts: string }
+  | { kind: "recap"; id: string; anchorId: string; content: string; ts: string };
 
 // ── App Updates ──
 
@@ -1328,6 +1330,7 @@ export interface RunSearchResponse {
   results: RunSearchResult[];
   facets: RunSearchFacets;
   totalMatching: number;
+  isLite?: boolean;
 }
 
 export interface PlatformPreset {
@@ -1396,6 +1399,48 @@ export interface ProxyModelInfo {
   platformId: string;
   providerName: string;
   protocol: "anthropic" | "openai";
+}
+
+// ── Proxy request logging ──
+
+export interface ProxyRequestLog {
+  id: number;
+  ts: string;
+  model: string;
+  actualModel: string;
+  providerId: string;
+  result: string;
+  statusCode: number;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  thinkingTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  isStream: boolean;
+}
+
+export interface ProxyLogFilter {
+  model: string | null;
+  providerId: string | null;
+  days: number | null;
+}
+
+export interface ProxyLogResponse {
+  entries: ProxyRequestLog[];
+  total: number;
+}
+
+export interface ProxyDayHealth {
+  date: string;
+  providerId: string;
+  successCount: number;
+  errorCount: number;
+}
+
+export interface ProxyLogDistinctValues {
+  models: string[];
+  providers: string[];
 }
 
 /** BTW side question streaming events (from Tauri) */

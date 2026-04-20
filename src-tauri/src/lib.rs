@@ -126,6 +126,7 @@ pub fn run() {
         .manage(new_actor_session_map())
         .manage(CliInfoCache::new())
         .manage(Arc::new(EventWriter::new()))
+        .manage(std::sync::Arc::new(storage::proxy_logs::ProxyLogStore::new()))
         .manage(SpawnLocks::new())
         .manage(ShutdownGate::new())
         .manage(cancel_token)
@@ -153,6 +154,7 @@ pub fn run() {
             commands::runs::soft_delete_runs,
             commands::runs::search_prompts,
             commands::history::search_runs,
+            commands::history::search_runs_fast,
             commands::history::get_run_files,
             commands::runs::add_prompt_favorite,
             commands::runs::remove_prompt_favorite,
@@ -284,6 +286,9 @@ pub fn run() {
             commands::proxy::get_proxy_status,
             commands::proxy::refresh_proxy_models,
             commands::proxy::fetch_provider_models,
+            commands::proxy_logs::get_proxy_logs,
+            commands::proxy_logs::get_proxy_health,
+            commands::proxy_logs::get_proxy_log_filters,
         ])
         .setup(move |app| {
             // Set up broadcast emitter (requires AppHandle, so must be in setup)
@@ -315,10 +320,12 @@ pub fn run() {
             {
                 let proxy_state: std::sync::Arc<tokio::sync::Mutex<Option<proxy::ProxyServer>>> =
                     app.state::<proxy::ProxyState>().inner().clone();
+                let log_store: std::sync::Arc<storage::proxy_logs::ProxyLogStore> =
+                    app.state::<std::sync::Arc<storage::proxy_logs::ProxyLogStore>>().inner().clone();
                 let settings = storage::settings::get_user_settings();
                 if settings.auth_mode == "api" {
                     tauri::async_runtime::spawn(async move {
-                        match proxy::ProxyServer::start().await {
+                        match proxy::ProxyServer::start(log_store).await {
                             Ok(server) => {
                                 let status = server.get_status().await;
                                 log::info!("[app] local proxy started on port {}", status.port);

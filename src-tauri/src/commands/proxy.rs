@@ -1,10 +1,15 @@
 use crate::models::{ProxyModelInfo, ProxyStatus};
 use crate::proxy::{ProxyServer, ProxyState};
 use crate::storage;
+use crate::storage::proxy_logs::ProxyLogStore;
+use std::sync::Arc;
 use tauri::State;
 
 #[tauri::command]
-pub async fn start_proxy(proxy_state: State<'_, ProxyState>) -> Result<ProxyStatus, String> {
+pub async fn start_proxy(
+    proxy_state: State<'_, ProxyState>,
+    log_store: State<'_, Arc<ProxyLogStore>>,
+) -> Result<ProxyStatus, String> {
     let mut guard = proxy_state.lock().await;
 
     // Stop existing proxy if running
@@ -12,7 +17,7 @@ pub async fn start_proxy(proxy_state: State<'_, ProxyState>) -> Result<ProxyStat
         existing.stop().await;
     }
 
-    let server = ProxyServer::start().await?;
+    let server = ProxyServer::start(log_store.inner().clone()).await?;
     let status = server.get_status().await;
     *guard = Some(server);
 

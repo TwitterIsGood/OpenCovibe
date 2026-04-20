@@ -7,6 +7,7 @@ pub mod translator;
 
 use crate::models::{ProxyModelInfo, ProxyProvider, ProxyStatus};
 use crate::storage;
+use crate::storage::proxy_logs::ProxyLogStore;
 use router::build_proxy_router;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -21,6 +22,8 @@ pub struct ProxyConfig {
     pub providers: Vec<ProxyProvider>,
     /// Shared HTTP client with connection pooling for upstream requests.
     pub http_client: reqwest::Client,
+    /// Log store for recording proxy requests.
+    pub log_store: Arc<ProxyLogStore>,
 }
 
 /// Manages the local proxy server lifecycle.
@@ -33,7 +36,7 @@ pub struct ProxyServer {
 impl ProxyServer {
     /// Start the proxy server.
     /// Binds to 127.0.0.1:{settings.proxy_port or 0}, generates an auto-key if needed.
-    pub async fn start() -> Result<Self, String> {
+    pub async fn start(log_store: Arc<ProxyLogStore>) -> Result<Self, String> {
         let settings = storage::settings::get_user_settings();
 
         // Generate auto-key if not present
@@ -88,6 +91,7 @@ impl ProxyServer {
             port: actual_port,
             providers,
             http_client,
+            log_store,
         }));
 
         let shutdown = CancellationToken::new();
@@ -237,20 +241,25 @@ fn build_providers_from_settings(settings: &crate::models::UserSettings) -> Vec<
     providers
 }
 
-/// Aggregate models from all providers into a flat list.
+/// Aggregate models from all providers into a deduplicated list.
+/// When multiple providers offer the same model, the first provider wins
+/// for display, but routing still round-robins across all providers.
 fn aggregate_models(providers: &[ProxyProvider]) -> Vec<ProxyModelInfo> {
-    providers
-        .iter()
-        .filter(|p| p.enabled)
-        .flat_map(|p| {
-            p.models.iter().map(|m| ProxyModelInfo {
-                id: m.clone(),
-                platform_id: p.platform_id.clone(),
-                provider_name: p.platform_id.clone(),
-                protocol: p.protocol.clone(),
-            })
-        })
-        .collect()
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for p in providers.iter().filter(|p| p.enabled) {
+        for m in &p.models {
+            if seen.insert(m.clone()) {
+                result.push(ProxyModelInfo {
+                    id: m.clone(),
+                    platform_id: p.platform_id.clone(),
+                    provider_name: p.platform_id.clone(),
+                    protocol: p.protocol.clone(),
+                });
+            }
+        }
+    }
+    result
 }
 
 /// Tauri managed state type for the proxy.

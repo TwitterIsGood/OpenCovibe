@@ -183,6 +183,13 @@ export async function searchRuns(filters: RunSearchFilters): Promise<RunSearchRe
   return invoke<RunSearchResponse>("search_runs", { filters });
 }
 
+export async function searchRunsFast(
+  filters: RunSearchFilters,
+): Promise<RunSearchResponse> {
+  dbg("api", "searchRunsFast", filters);
+  return invoke<RunSearchResponse>("search_runs_fast", { filters });
+}
+
 export async function getRunFiles(runId: string): Promise<string[]> {
   dbg("api", "getRunFiles", { runId });
   return invoke<string[]>("get_run_files", { runId });
@@ -430,6 +437,32 @@ export async function fetchProviderModels(
 
 export async function hotSwitchModels(runId: string): Promise<void> {
   return invoke<void>("hot_switch_models", { runId });
+}
+
+// ── Proxy logs ──
+
+export async function getProxyLogs(
+  filter: import("./types").ProxyLogFilter,
+  limit?: number,
+  offset?: number,
+): Promise<import("./types").ProxyLogResponse> {
+  return invoke<import("./types").ProxyLogResponse>("get_proxy_logs", {
+    filter,
+    limit: limit ?? null,
+    offset: offset ?? null,
+  });
+}
+
+export async function getProxyHealth(
+  hours?: number,
+): Promise<import("./types").ProxyDayHealth[]> {
+  return invoke<import("./types").ProxyDayHealth[]>("get_proxy_health", {
+    hours: hours ?? null,
+  });
+}
+
+export async function getProxyLogFilters(): Promise<import("./types").ProxyLogDistinctValues> {
+  return invoke<import("./types").ProxyLogDistinctValues>("get_proxy_log_filters");
 }
 
 export async function runDiagnostics(cwd: string): Promise<DiagnosticsReport> {

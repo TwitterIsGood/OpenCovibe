@@ -59,7 +59,6 @@
   import type { PromptInputSnapshot } from "$lib/types";
   import MarkdownContent from "$lib/components/MarkdownContent.svelte";
   import HookReviewCard from "$lib/components/HookReviewCard.svelte";
-  import ChatToolbar from "$lib/components/ChatToolbar.svelte";
   import ContextUsageGrid from "$lib/components/ContextUsageGrid.svelte";
   import CostSummaryView from "$lib/components/CostSummaryView.svelte";
   import { parseContextMarkdown } from "$lib/utils/context-parser";
@@ -3619,20 +3618,6 @@
       </div>
     {/if}
 
-    <!-- Chat Toolbar (model selector, plan mode, export, etc.) -->
-    {#if store.useStreamSession && store.run?.id}
-      <ChatToolbar
-        agent={store.run?.agent ?? store.agent}
-        runId={store.run?.id ?? ""}
-        runName={store.run?.name ?? ""}
-        timeline={store.timeline}
-        onSendPrompt={(prompt) => sendMessage(prompt, [])}
-        onOpenPalette={() => {}}
-        platformId={store.run?.platform_id ?? ""}
-        authMode={store.apiKeySource ? "api" : "cli"}
-      />
-    {/if}
-
     <!-- Main area -->
     <div class="flex-1 overflow-hidden relative">
       {#if store.useStreamSession}
@@ -3706,6 +3691,9 @@
                     authMode={store.authMode}
                     onAuthModeChange={handleAuthModeChange}
                     variant="hero"
+                    providerModels={proxyStatus?.models ?? []}
+                    unifiedModel={tierOpus === tierSonnet && tierSonnet === tierHaiku ? tierOpus : ""}
+                    onUnifiedModelChange={(model) => saveTierModels(model, model, model)}
                   />
                   <span class="text-muted-foreground">·</span>
                   {@render heroMetaItems()}
@@ -3933,6 +3921,18 @@
                             {:else}
                               <MarkdownContent text={entry.content} />
                             {/if}
+                          </div>
+                        </div>
+                      </div>
+                    {:else if entry.kind === "recap"}
+                      <div class="w-full py-2">
+                        <div class="chat-content-width pl-7">
+                          <div class="recap-card rounded-lg border border-violet-500/20 bg-violet-500/5 px-4 py-3">
+                            <div class="flex items-center gap-2 mb-2">
+                              <svg class="w-4 h-4 text-violet-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                              <span class="text-xs font-medium text-violet-400 uppercase tracking-wider">Recap</span>
+                            </div>
+                            <div class="text-sm text-[#c0caf5]/80 leading-relaxed whitespace-pre-wrap">{entry.content}</div>
                           </div>
                         </div>
                       </div>
@@ -4559,6 +4559,9 @@
         authSourceCategory={store.authSourceCategory}
         apiKeySource={store.apiKeySource}
         onAuthModeChange={handleAuthModeChange}
+        providerModels={proxyStatus?.models ?? []}
+        unifiedModel={tierOpus === tierSonnet && tierSonnet === tierHaiku ? tierOpus : ""}
+        onUnifiedModelChange={(model) => saveTierModels(model, model, model)}
         showAuthBadge={!welcomeVisible}
         onShortcutHelp={() => (shortcutHelpOpen = !shortcutHelpOpen)}
         availableSkills={store.availableSkills}
@@ -4567,6 +4570,8 @@
         hasStash={!!stashedInput}
         {userHistory}
         runId={store.run?.id ?? ""}
+        runName={store.run?.name ?? ""}
+        timeline={store.timeline}
         onRestoreStash={() => {
           if (stashedInput) {
             promptRef?.restoreSnapshot(stashedInput);

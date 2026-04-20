@@ -8,6 +8,7 @@
     CliModelInfo,
     DirEntry,
     PlatformCredential,
+    TimelineEntry,
   } from "$lib/types";
   import * as api from "$lib/api";
   import { createGitBranchPoller } from "$lib/utils/git-branch";
@@ -16,6 +17,7 @@
   import SkillSelector from "./SkillSelector.svelte";
   import FileAttachment from "./FileAttachment.svelte";
   import SlashMenu from "./SlashMenu.svelte";
+  import ExportModal from "./ExportModal.svelte";
   import AtMentionMenu from "./AtMentionMenu.svelte";
   import {
     filterSlashCommands,
@@ -95,6 +97,9 @@
     authSourceCategory = "unknown",
     apiKeySource = "",
     onAuthModeChange,
+    providerModels = [],
+    unifiedModel = "",
+    onUnifiedModelChange,
     availableSkills = [],
     skillItems = [],
     agents = [],
@@ -106,6 +111,8 @@
     onShortcutHelp,
     userHistory = [] as string[],
     runId = "",
+    runName = "",
+    timeline = [] as TimelineEntry[],
   }: {
     agent?: string;
     disabled?: boolean;
@@ -134,6 +141,9 @@
     authSourceCategory?: string;
     apiKeySource?: string;
     onAuthModeChange?: (mode: string) => void;
+    providerModels?: import("$lib/types").ProxyModelInfo[];
+    unifiedModel?: string;
+    onUnifiedModelChange?: (model: string) => void;
     availableSkills?: string[];
     skillItems?: { name: string; description: string }[];
     agents?: { name: string; description: string }[];
@@ -145,10 +155,13 @@
     onShortcutHelp?: () => void;
     userHistory?: string[];
     runId?: string;
+    runName?: string;
+    timeline?: TimelineEntry[];
   } = $props();
 
   // ── BTW mode (side question) ──
   let btwMode = $state(false);
+  let shareOpen = $state(false);
 
   // Auto-close BTW mode when agent stops running
   $effect(() => {
@@ -2094,6 +2107,9 @@
             {hasRun}
             {authMode}
             {onAuthModeChange}
+            {providerModels}
+            {unifiedModel}
+            {onUnifiedModelChange}
           />
         {/if}
         <SkillSelector
@@ -2126,6 +2142,26 @@
 
       <!-- Right: actions -->
       <div class="flex items-center gap-0.5">
+        {#if runId}
+          <button
+            class="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
+            onclick={() => (shareOpen = true)}
+            title={t("prompt_shareTitle")}
+          >
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+              <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" /><line x1="15.41" x2="8.59" y2="6.51" />
+            </svg>
+          </button>
+        {/if}
         {#if slashEnabled}
           <button
             bind:this={slashBtnEl}
@@ -2332,4 +2368,6 @@
       </div>
     </div>
   {/if}
+
+  <ExportModal bind:open={shareOpen} {runId} {runName} {timeline} />
 </div>

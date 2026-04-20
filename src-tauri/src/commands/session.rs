@@ -815,6 +815,7 @@ pub async fn start_session(
     spawn_locks: State<'_, SpawnLocks>,
     cancel_token: State<'_, CancellationToken>,
     proxy_state: State<'_, crate::proxy::ProxyState>,
+    log_store: State<'_, std::sync::Arc<crate::storage::proxy_logs::ProxyLogStore>>,
     run_id: String,
     mode: Option<SessionMode>,
     session_id: Option<String>,
@@ -829,7 +830,7 @@ pub async fn start_session(
         let mut guard = proxy_state.inner().lock().await;
         if guard.is_none() {
             log::info!("[session] proxy not running, starting for API mode session");
-            match crate::proxy::ProxyServer::start().await {
+            match crate::proxy::ProxyServer::start(log_store.inner().clone()).await {
                 Ok(server) => {
                     let status = server.get_status().await;
                     log::info!("[session] proxy started on port {}", status.port);

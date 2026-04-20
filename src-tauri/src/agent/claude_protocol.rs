@@ -605,6 +605,13 @@ impl ProtocolState {
                             content,
                         });
                     }
+                } else if subtype == "away_summary" {
+                    let content = opt_str(raw, "content").unwrap_or_default();
+                    log::debug!("[protocol] away_summary ({} chars)", content.len());
+                    events.push(BusEvent::Recap {
+                        run_id: run_id.to_string(),
+                        text: content,
+                    });
                 } else if !subtype.is_empty() {
                     // Unknown system subtype — wrap as Raw for forward compatibility
                     log::debug!("[protocol] unknown system subtype: {}", subtype);

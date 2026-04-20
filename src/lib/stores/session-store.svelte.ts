@@ -3220,6 +3220,20 @@ export class SessionStore {
         break;
       }
 
+      case "recap": {
+        dbg("store", "recap received", { len: ev.text.length });
+        const recapId = uuid();
+        const entry: TimelineEntry = {
+          kind: "recap",
+          id: recapId,
+          anchorId: recapId,
+          content: ev.text,
+          ts: eventTs(ev),
+        };
+        this._pushTimeline(ctx, entry);
+        break;
+      }
+
       case "elicitation_prompt": {
         dbg("store", "elicitation_prompt received", {
           request_id: ev.request_id,

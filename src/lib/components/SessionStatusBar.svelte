@@ -8,6 +8,7 @@
   import { t } from "$lib/i18n/index.svelte";
   import { fmtNumber } from "$lib/i18n/format";
   import { truncate, formatTokenCount, formatDuration, formatCostDisplay } from "$lib/utils/format";
+  import ModelPickerPanel from "$lib/components/ModelPickerPanel.svelte";
 
   let {
     run = null,
@@ -489,30 +490,12 @@
       {#if model}
         <span class="text-foreground/30">&middot;</span>
         {#if useProxyTiers && proxyStatus}
-          <!-- Proxy tier model badges -->
+          <!-- Proxy tier model pickers -->
           {@const allModels = proxyStatus.models ?? []}
           <div class="flex items-center gap-1">
-            {#each [
-              { tier: "opus", label: "Op", local: localOpus },
-              { tier: "sonnet", label: "So", local: localSonnet },
-              { tier: "haiku", label: "Ha", local: localHaiku },
-            ] as t}
-              <select
-                class="rounded border px-1 py-0 text-[11px] font-mono text-foreground/70 hover:bg-accent hover:text-foreground transition-colors cursor-pointer max-w-[140px] truncate bg-background {tierDirty ? 'border-amber-500/50' : 'border-transparent'}"
-                title="{t.label}: {t.local || '(not set)'}"
-                onchange={(e) => {
-                  const val = (e.target as HTMLSelectElement).value;
-                  if (t.tier === "opus") localOpus = val;
-                  else if (t.tier === "sonnet") localSonnet = val;
-                  else localHaiku = val;
-                }}
-              >
-                <option value="" selected={!t.local}>({t.label})</option>
-                {#each allModels as m}
-                  <option value={m.id} selected={t.local === m.id}>{m.id.length > 20 ? m.id.slice(0, 18) + '…' : m.id}</option>
-                {/each}
-              </select>
-            {/each}
+            <ModelPickerPanel models={allModels} bind:value={localOpus} label="Op" onchange={() => {}} />
+            <ModelPickerPanel models={allModels} bind:value={localSonnet} label="So" onchange={() => {}} />
+            <ModelPickerPanel models={allModels} bind:value={localHaiku} label="Ha" onchange={() => {}} />
             {#if tierDirty}
               <button
                 class="rounded px-1 py-0 text-[10px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors"

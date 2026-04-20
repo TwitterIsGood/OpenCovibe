@@ -14,6 +14,7 @@
   import Button from "$lib/components/Button.svelte";
   import Input from "$lib/components/Input.svelte";
   import KeybindingEditor from "$lib/components/KeybindingEditor.svelte";
+  import ModelPickerPanel from "$lib/components/ModelPickerPanel.svelte";
   import { formatKeyDisplay } from "$lib/stores/keybindings.svelte";
   import {
     PLATFORM_PRESETS,
@@ -862,7 +863,20 @@
     // Compress 3 tier inputs → models array; undefined when all empty (→ backend preset fallback).
     // Do NOT fall back to preset?.models here — undefined means "use provider defaults",
     // and baking preset values into credential would prevent future preset updates from taking effect.
-    const modelsToSave = compressModelsFromTiers(modelOpus, modelSonnet, modelHaiku);
+    const tierModels = compressModelsFromTiers(modelOpus, modelSonnet, modelHaiku);
+    // Preserve fetched models: if credential already has more models than the 3 tier slots,
+    // keep the full list but update tier positions (first 3 elements).
+    const existingCred = findCredential(platformCredentials, selectedPlatformId);
+    let modelsToSave = tierModels;
+    if (existingCred?.models && existingCred.models.length > 3) {
+      const merged = [...existingCred.models];
+      if (tierModels) {
+        merged[0] = tierModels[0];
+        merged[1] = tierModels[1];
+        merged[2] = tierModels[2];
+      }
+      modelsToSave = merged;
+    }
 
     // Convert extra_env array back to Record, filter empty keys, warn on duplicates
     const extraEnvRecord: Record<string, string> = {};
@@ -1252,6 +1266,13 @@
       } else {
         // Create minimal credential if not exists
         platformCredentials.push({ platform_id: platformId, models });
+      }
+      // Update tier fields from fetched models so saveCurrentToCredential stays in sync
+      if (selectedPlatformId === platformId) {
+        const [o, s, h] = expandModelsToTiers(models);
+        modelOpus = o;
+        modelSonnet = s;
+        modelHaiku = h;
       }
       syncAndSave(platformId);
     } catch (e) {
@@ -2240,47 +2261,17 @@
                 </div>
 
                 {#if proxyStatus?.running}
-                  <!-- Tier model selectors: 3 dropdowns for opus/sonnet/haiku -->
+                  <!-- Tier model selectors: searchable floating panels -->
                   {@const allModels = proxyStatus.models ?? []}
-                  <div class="space-y-2">
+                  <div class="space-y-1.5">
                     <div class="flex items-center gap-2">
-                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right">Opus</span>
-                      <select
-                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
-                        bind:value={tierOpus}
-                        onchange={() => saveTierModels()}
-                      >
-                        <option value="">(not set)</option>
-                        {#each allModels as m}
-                          <option value={m.id}>{m.id} ({m.providerName})</option>
-                        {/each}
-                      </select>
+                      <ModelPickerPanel models={allModels} bind:value={tierOpus} label="Opus" onchange={() => saveTierModels()} />
                     </div>
                     <div class="flex items-center gap-2">
-                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right font-medium">Sonnet</span>
-                      <select
-                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
-                        bind:value={tierSonnet}
-                        onchange={() => saveTierModels()}
-                      >
-                        <option value="">(not set)</option>
-                        {#each allModels as m}
-                          <option value={m.id}>{m.id} ({m.providerName})</option>
-                        {/each}
-                      </select>
+                      <ModelPickerPanel models={allModels} bind:value={tierSonnet} label="Sonnet" onchange={() => saveTierModels()} />
                     </div>
                     <div class="flex items-center gap-2">
-                      <span class="text-xs text-muted-foreground w-16 shrink-0 text-right">Haiku</span>
-                      <select
-                        class="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs font-mono"
-                        bind:value={tierHaiku}
-                        onchange={() => saveTierModels()}
-                      >
-                        <option value="">(not set)</option>
-                        {#each allModels as m}
-                          <option value={m.id}>{m.id} ({m.providerName})</option>
-                        {/each}
-                      </select>
+                      <ModelPickerPanel models={allModels} bind:value={tierHaiku} label="Haiku" onchange={() => saveTierModels()} />
                     </div>
                   </div>
                   {#if allModels.length === 0}
@@ -2692,21 +2683,21 @@
                 {@const fetchLoading = providerFetchLoading[selectedPlatformId ?? ""]}
                 <div>
                   <div class="flex items-center justify-between mb-1.5">
-                    <label class="text-sm font-medium">Models</label>
+                    <label class="text-sm font-medium">{t("settings_general_models")}</label>
                     <div class="flex gap-1.5">
                       <button
                         class="rounded-md border px-2.5 py-1 text-[11px] transition-colors text-muted-foreground hover:bg-accent disabled:opacity-50"
                         disabled={fetchLoading || !anthropicApiKey}
                         onclick={() => selectedPlatformId && handleFetchProviderModels(selectedPlatformId)}
-                        title={!anthropicApiKey ? "API key required" : "Fetch models from /v1/models"}
+                        title={!anthropicApiKey ? t("settings_general_apiKeyRequired") : t("settings_general_fetchModelsTooltip")}
                       >
                         {#if fetchLoading}
                           <span class="flex items-center gap-1">
                             <span class="h-2.5 w-2.5 border border-foreground/30 border-t-foreground rounded-full animate-spin"></span>
-                            Fetching...
+                            {t("settings_general_fetchingModels")}
                           </span>
                         {:else}
-                          Fetch Models
+                          {t("settings_general_fetchModels")}
                         {/if}
                       </button>
                     </div>
@@ -2726,13 +2717,13 @@
                       {/each}
                     </div>
                   {:else}
-                    <p class="text-xs text-muted-foreground mt-1">No models configured. Fetch from API or add manually.</p>
+                    <p class="text-xs text-muted-foreground mt-1">{t("settings_general_noModels")}</p>
                   {/if}
                   <!-- Manual model add -->
                   {#if selectedPlatformId}
                     <div class="mt-2 flex gap-1.5">
                       <Input
-                        placeholder="Add model name manually..."
+                        placeholder={t("settings_general_addModelPlaceholder")}
                         class="flex-1 font-mono text-xs"
                         onkeydown={(e: KeyboardEvent) => {
                           if (e.key === "Enter") {
